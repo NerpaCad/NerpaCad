@@ -1,0 +1,40 @@
+import { expect, test } from '@playwright/test'
+import { idle, launch, nodes } from './app'
+
+test('demo «Остров» opens from its button and plays', async () => {
+  test.setTimeout(120000)
+  const { app, win } = await launch()
+  const errors: string[] = []
+  win.on('console', (m: any) => m.type() === 'error' && errors.push(m.text()))
+  win.on('pageerror', (e: any) => errors.push(String(e)))
+  await win.getByTestId('mode-robotics').click()
+  await win.waitForTimeout(1000)
+  await win.getByTestId('load-island').scrollIntoViewIfNeeded()
+  await win.getByTestId('load-island').click()
+  await idle(win)
+  const ns = await nodes(win)
+  expect(ns.filter((n: any) => n.prim === 'nerpa').map((n: any) => n.name)).toEqual(['Нерпа 1', 'Читик', 'Геннадий'])
+  expect(ns.filter((n: any) => n.prim === 'robot').length).toBe(1)
+  expect(ns.some((n: any) => n.name === 'Маяк')).toBe(true)
+  await win.waitForTimeout(1500)
+  await win.screenshot({ path: 'test-results/island-idle.png' })
+  await win.getByTestId('sim-start').click()
+  await win.waitForFunction(() => (window as any).__cad.soundPlayer.started >= 3, null, { timeout: 30000 })
+  await win.waitForTimeout(3000)
+  await win.screenshot({ path: 'test-results/island-run.png' })
+  // the beautiful view of it
+  await win.evaluate(() => (window as any).__cad.actions.setView({ on: true, time: 'evening' }))
+  await win.waitForTimeout(2500)
+  await win.screenshot({ path: 'test-results/island-pretty.png' })
+  await win.getByTestId('sim-stop').click()
+  // the help tells about the field
+  await win.locator('[data-testid=viewport] canvas').click({ position: { x: 5, y: 300 } })
+  await win.keyboard.press('F1')
+  await expect(win.getByTestId('help-field')).toBeVisible()
+  await expect(win.getByTestId('help-field')).toContainText('Shift')
+  await win.getByTestId('help-field').scrollIntoViewIfNeeded()
+  await win.screenshot({ path: 'test-results/island-help.png' })
+  await win.keyboard.press('F1')
+  expect(errors.filter((e) => !/DevTools|Autofill/.test(e))).toEqual([])
+  await app.close()
+})

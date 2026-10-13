@@ -1,0 +1,42 @@
+{
+  "name": "nerpacad",
+  "version": "0.2.0",
+  "description": "NerpaCad — простая 3D CAD-система и симулятор робототехники для детей",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "npm run deps && npm run ensure-electron && electron-vite dev",
+    "build": "npm run deps && electron-vite build",
+    "preview": "npm run deps && npm run ensure-electron && electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run deps && vitest run",
+    "test:e2e": "npm run deps && npm run ensure-electron && electron-vite build && playwright test",
+    "build:win": "npm run deps && electron-vite build && electron-builder --win",
+    "build:linux": "npm run deps && electron-vite build && electron-builder --linux",
+    "ensure-electron": "node node_modules/electron/install.js",
+    "deps": "node scripts/check-deps.mjs"
+  },
+  "author": "Savelev Sviatoslav Sergeevitch",
+  "homepage": "https://example.org/nerpacad",
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "@dimforge/rapier3d-compat": "^0.20.0",
+    "@playwright/test": "^1.63.0",
+    "@preact/preset-vite": "^2.10.6",
+    "@preact/signals": "^2.11.2",
+    "@salusoft89/planegcs": "^1.2.0",
+    "@types/node": "^22.20.4",
+    "@types/three": "^0.186.0",
+    "blockly": "^13.3.0",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "manifold-3d": "^3.5.3",
+    "opentype.js": "^2.0.0",
+    "preact": "^10.29.8",
+    "three": "^0.186.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.6",
+    "vitest": "^5.0.1"
+  },
+  "productName": "NerpaCad"
+}

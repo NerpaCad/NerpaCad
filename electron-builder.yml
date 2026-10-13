@@ -1,0 +1,69 @@
+appId: ru.nerpacad.app
+productName: NerpaCad
+copyright: © 2026 NerpaCad authors · GPL-3.0
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: LICENSE
+    to: LICENSE.txt
+asar: true
+# no auto-update in the alpha: nothing is published anywhere
+publish: null
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: NerpaCad-${version}-win-x64.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: NerpaCad
+  language: 1049
+  multiLanguageInstaller: true
+  license: LICENSE
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  icon: build/icon.png
+  executableName: nerpacad
+  category: Education
+  synopsis: Simple 3D CAD and robotics simulator for kids
+  description: NerpaCad — простая 3D CAD-система, эскизы, симулятор робототехники и схемотехники для детей и школ.
+  maintainer: NerpaCad authors <nerpacad@localhost>
+  vendor: NerpaCad authors
+  desktop:
+    entry:
+      Name: NerpaCad
+      Comment: 3D CAD, robotics and circuits for kids
+      Comment[ru]: 3D-моделирование, робототехника и схемотехника для детей
+      Keywords: CAD;3D;Robotics;Arduino;Education;
+      StartupWMClass: NerpaCad
+  artifactName: NerpaCad-${version}-linux-${arch}.${ext}
+appImage:
+  artifactName: NerpaCad-${version}-linux-x86_64.${ext}
+deb:
+  artifactName: NerpaCad-${version}-linux-amd64.${ext}
+fileAssociations:
+  - ext: nerpa
+    name: NerpaCad Project
+    description: NerpaCad project
+    role: Editor
+    icon: build/icon
+    mimeType: application/x-nerpacad
+  - ext: tcad
+    name: NerpaCad Project (old)
+    description: NerpaCad project (Cad System format)
+    role: Editor
+    icon: build/icon
+    mimeType: application/x-nerpacad-tcad
