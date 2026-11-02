@@ -32,6 +32,11 @@ const api = {
   /** Mods: the folders found (with their mod.json) and opening the mods folder. */
   modsList: (): Promise<{ key: string; folder: string; path: string; manifest: string | null }[]> => ipcRenderer.invoke('mods:list'),
   modsOpenFolder: (): Promise<string> => ipcRenderer.invoke('mods:openFolder'),
+  /** Recent projects: the list (each with whether its file is still there), add one, forget one, open one. */
+  recentList: (): Promise<{ path: string; name: string; at: number; thumb?: string; missing: boolean }[]> => ipcRenderer.invoke('recent:list'),
+  recentAdd: (entry: { path: string; name: string; thumb?: string }): Promise<boolean> => ipcRenderer.invoke('recent:add', entry),
+  recentRemove: (path: string): Promise<boolean> => ipcRenderer.invoke('recent:remove', path),
+  recentOpen: (path: string): Promise<OpenedFile | null> => ipcRenderer.invoke('recent:open', path),
   /** how often to autosave, ms (tests make it short) */
   autosaveEvery: Number(process.env.CAD_AUTOSAVE_MS) || 60_000,
   /** Full path of a file dropped onto the window. */

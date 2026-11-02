@@ -22,6 +22,7 @@ test('installed build: 3D, sketch solver, robotics with models and physics, isla
       ...process.env,
       CAD_SKIP_CLOSE_PROMPT: '1',
       CAD_AUTOSAVE_DIR: mkdtempSync(join(tmpdir(), 'nerpa-pk-')),
+      CAD_RECENT_FILE: join(mkdtempSync(join(tmpdir(), 'nerpa-pk-recent-')), 'recent.json'),
       // the test mod: its model has to load through mod:// from the packed app's own origin
       CAD_MODS_DIR: resolve(__dirname, '../fixtures/mods')
     }

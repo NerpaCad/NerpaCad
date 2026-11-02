@@ -13,6 +13,7 @@
  * rises toward +Y), before the piece's own rotation around Z. Millimetres.
  */
 import type { DecorKind, Surface, TerrainKind, TerrainParams, TileKind } from '../doc/model'
+import { type SolidGrid, gridSpans } from './solid'
 import { TILE_KINDS, TILE_SIZE } from './tiles'
 
 export const TERRAIN_KINDS: TerrainKind[] = ['platform', 'ramp', 'bridge', 'ground', 'water']
@@ -41,7 +42,7 @@ export const landParams = (k: LandKind): TerrainParams => (k === 'water' ? { kin
 export const landKindOf = (p: TerrainParams | undefined): LandKind | null =>
   p?.kind === 'water' ? 'water' : p?.kind === 'ground' ? (SURFACES.includes(p.surface as Surface) ? (p.surface as Surface) : 'grass') : null
 /** is this a landscape tile (ground or water)? */
-export const isLand = (k: TerrainKind | 'post') => k === 'ground' || k === 'water'
+export const isLand = (k: TerrainKind | 'post' | 'solid') => k === 'ground' || k === 'water'
 /** thickness of a bridge deck, mm */
 export const BRIDGE_DECK = 15
 /** heights offered, mm; the default lets the robot (58 mm) and the seal (100 mm) pass under a bridge */
@@ -66,10 +67,16 @@ export const DEFAULT_TERRAIN: Record<TerrainKind, TerrainParams> = {
 /**
  * A piece on the field. A 'post' is not a piece of the document's terrain but something solid
  * and round standing on the field (a tree trunk, a rock — see decor.ts) that blocks the way.
+ * A 'solid' is a static shape (a model from the 3D tab marked «Static», see solid.ts): it is
+ * walked over and stopped at like terrain, by the columns of its `grid`.
  */
 export interface PlacedTerrain {
   id: string
-  kind: TerrainKind | 'post'
+  kind: TerrainKind | 'post' | 'solid'
+  /** a static shape's columns (world coordinates) */
+  grid?: SolidGrid
+  /** the colour it is painted (platforms, ramps, bridges, static shapes): what a line sensor sees on it */
+  color?: string
   /** a post's radius, mm */
   radius?: number
   /** what a post is (a tree, a bush, a rock) */
@@ -94,8 +101,9 @@ export interface PlacedTerrain {
 }
 
 /** Footprint half-sizes (local X, local Y), mm. */
-export function halfSize(t: Pick<PlacedTerrain, 'kind' | 'length' | 'radius'>): [number, number] {
+export function halfSize(t: Pick<PlacedTerrain, 'kind' | 'length' | 'radius' | 'grid'>): [number, number] {
   if (t.kind === 'post') return [t.radius ?? 0, t.radius ?? 0]
+  if (t.kind === 'solid') return t.grid ? [(t.grid.nx * t.grid.cell) / 2, (t.grid.ny * t.grid.cell) / 2] : [0, 0]
   return [TILE_SIZE / 2, (TILE_SIZE * (t.kind === 'ramp' ? t.length : 1)) / 2]
 }
 
@@ -112,9 +120,12 @@ export function toLocal(t: PlacedTerrain, x: number, y: number): [number, number
 }
 
 const EDGE = 1e-6
+/** what lies this close over a surface (mm) stands on it */
+const SEAT = 0.5
 
 /** Is this floor point inside the piece's footprint? */
 export function covers(t: PlacedTerrain, x: number, y: number): boolean {
+  if (t.kind === 'solid') return !!t.grid && gridSpans(t.grid, x, y).length > 0
   if (t.kind === 'post') return Math.hypot(x - t.x, y - t.y) <= (t.radius ?? 0) + EDGE
   const [lx, ly] = toLocal(t, x, y)
   const [hx, hy] = halfSize(t)
@@ -123,6 +134,10 @@ export function covers(t: PlacedTerrain, x: number, y: number): boolean {
 
 /** The walkable top of the piece at a floor point (mm), or null outside its footprint. */
 export function topAt(t: PlacedTerrain, x: number, y: number): number | null {
+  if (t.kind === 'solid') {
+    const s = t.grid ? gridSpans(t.grid, x, y) : []
+    return s.length ? s[s.length - 1][1] : null
+  }
   if (t.kind === 'post') return covers(t, x, y) ? (t.base ?? 0) + t.height : null
   const [lx, ly] = toLocal(t, x, y)
   const [hx, hy] = halfSize(t)
@@ -132,13 +147,24 @@ export function topAt(t: PlacedTerrain, x: number, y: number): number | null {
   return b + t.height
 }
 
-/** Where the piece is solid at a floor point: [bottom, top] in mm, or null. */
+/** Where the piece is solid at a floor point: [bottom, top] in mm (its lowest to its highest), or null. */
 export function solidAt(t: PlacedTerrain, x: number, y: number): [number, number] | null {
+  if (t.kind === 'solid') {
+    const s = solidsAt(t, x, y)
+    return s.length ? [s[0][0], s[s.length - 1][1]] : null
+  }
   const top = topAt(t, x, y)
   if (top === null) return null
   if (t.kind === 'water') return [0, WATER_FLOOR]
   const b = t.base ?? 0
   return t.kind === 'bridge' ? [b + t.height - BRIDGE_DECK, b + t.height] : [b, top]
+}
+
+/** Every span [bottom, top] where the piece is solid at a floor point (a static shape may have several, one over another). */
+export function solidsAt(t: PlacedTerrain, x: number, y: number): [number, number][] {
+  if (t.kind === 'solid') return t.grid ? gridSpans(t.grid, x, y) : []
+  const s = solidAt(t, x, y)
+  return s ? [s] : []
 }
 
 /** Slope of a ramp: how much it rises per mm along its local Y, and that direction in the world. */
@@ -162,17 +188,17 @@ export function surfacesAt(pieces: PlacedTerrain[], x: number, y: number): Surfa
   const solids: [number, number][] = []
   const tops: SurfaceHit[] = [{ z: 0, piece: null }]
   for (const t of pieces) {
-    const s = solidAt(t, x, y)
-    if (!s) continue
-    solids.push(s)
-    // a pool: what stands in it stands on the water (swimmers), not on its bottom
-    if (t.kind === 'water') tops.push({ z: WATER_LEVEL, piece: t, water: true })
-    else tops.push({ z: s[1], piece: t })
+    for (const s of solidsAt(t, x, y)) {
+      solids.push(s)
+      // a pool: what stands in it stands on the water (swimmers), not on its bottom
+      if (t.kind === 'water') tops.push({ z: WATER_LEVEL, piece: t, water: true })
+      else tops.push({ z: s[1], piece: t })
+    }
   }
   // a surface with something solid right on it (a platform on the floor or on another platform,
   // a landscape tile under a platform) is not where one stands; the very bottom edge of a ramp
-  // is the floor itself
-  const covered = (h: SurfaceHit) => solids.some(([a, b]) => a <= h.z + EDGE && b > h.z + EDGE)
+  // is the floor itself. A static shape put on something may sit a hair above or into it
+  const covered = (h: SurfaceHit) => solids.some(([a, b]) => a <= h.z + SEAT && b > h.z + SEAT)
   return tops.filter((h) => !covered(h)).sort((a, b) => a.z - b.z)
 }
 
@@ -216,10 +242,7 @@ export const wetAt = (pieces: PlacedTerrain[], x: number, y: number, z: number) 
 export function wallAt(pieces: PlacedTerrain[], x: number, y: number, z: number, height: number, reach = 0): boolean {
   const lo = z + STEP + reach
   const hi = z + height
-  for (const t of pieces) {
-    const s = solidAt(t, x, y)
-    if (s && s[1] > lo + EDGE && s[0] < hi - EDGE) return true
-  }
+  for (const t of pieces) for (const s of solidsAt(t, x, y)) if (s[1] > lo + EDGE && s[0] < hi - EDGE) return true
   return false
 }
 

@@ -87,3 +87,17 @@ export function lineSensor(
 
 /** How light each landscape top looks to a line sensor (0 black … 1 white). */
 export const SURFACE_LIGHT: Record<Surface | 'water', number> = { grass: 0.62, sand: 0.86, stone: 0.68, road: 0.9, water: 0.2 }
+
+/**
+ * How light a painted surface looks to a line sensor (0 black … 1 white): the brightness of its
+ * colour as the eye sees it. A dark-blue platform reads dark, a yellow one light.
+ */
+export function colorLight(color: string | undefined): number {
+  const m = /^#?([0-9a-f]{6})$/i.exec(color ?? '')
+  if (!m) return 1
+  const v = parseInt(m[1], 16)
+  const r = (v >> 16) & 255
+  const g = (v >> 8) & 255
+  const b = v & 255
+  return Math.round(((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255) * 100) / 100
+}

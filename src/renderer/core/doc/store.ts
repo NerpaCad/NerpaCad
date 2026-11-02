@@ -22,6 +22,11 @@ export const refPlanes = signal<{ zy: boolean; zx: boolean }>({ zy: false, zx: f
 export const workplane = signal<Frame | null>(null)
 /** True while the user is picking a face to put the workplane on. */
 export const placingWorkplane = signal(false)
+/**
+ * The align tool is on (two or more shapes selected, dots shown round them); `key`: the shape
+ * the others are lined up with (none: their common box).
+ */
+export const aligning = signal<{ key: string | null } | null>(null)
 
 /**
  * The ruler (TinkerCad style): an origin with X/Y legs along the workplane it was placed on.

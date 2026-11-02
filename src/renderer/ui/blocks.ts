@@ -304,6 +304,65 @@ function definitions(): object[] {
       { ...stmt, inputsInline: true }
     ),
     def('ard_serial_println', 'looks_blocks', 'blk.serialPrintln', [v('TEXT', null as unknown as string)], { ...stmt, inputsInline: true }),
+    def(
+      'ard_pin_mode',
+      'output_blocks',
+      'blk.pinMode',
+      [
+        { type: 'field_dropdown', name: 'PIN', options: IO_PINS.map((p) => [pinNumber(p), p]) },
+        {
+          type: 'field_dropdown',
+          name: 'MODE',
+          options: [
+            [t('blk.modeInput'), 'INPUT'],
+            [t('blk.modePullup'), 'INPUT_PULLUP'],
+            [t('blk.modeOutput'), 'OUTPUT']
+          ]
+        }
+      ],
+      stmt
+    ),
+    def('ard_tone', 'output_blocks', 'blk.tone', [{ type: 'field_dropdown', name: 'PIN', options: IO_PINS.map((p) => [pinNumber(p), p]) }, v('FREQ', 'Number')], {
+      ...stmt,
+      inputsInline: true
+    }),
+    def(
+      'ard_tone_for',
+      'output_blocks',
+      'blk.toneFor',
+      [{ type: 'field_dropdown', name: 'PIN', options: IO_PINS.map((p) => [pinNumber(p), p]) }, v('FREQ', 'Number'), v('MS', 'Number')],
+      { ...stmt, inputsInline: true }
+    ),
+    def('ard_no_tone', 'output_blocks', 'blk.noTone', [{ type: 'field_dropdown', name: 'PIN', options: IO_PINS.map((p) => [pinNumber(p), p]) }], stmt),
+    def(
+      'ard_lcd_print',
+      'looks_blocks',
+      'blk.lcdPrint',
+      [
+        {
+          type: 'field_dropdown',
+          name: 'ROW',
+          options: [
+            ['1', '0'],
+            ['2', '1']
+          ]
+        },
+        v('COL', 'Number'),
+        v('TEXT', null as unknown as string)
+      ],
+      { ...stmt, inputsInline: true }
+    ),
+    def('ard_lcd_clear', 'looks_blocks', 'blk.lcdClear', [], stmt),
+    def(
+      'ard_ultrasonic',
+      'sensor_blocks',
+      'blk.ultrasonic',
+      [
+        { type: 'field_dropdown', name: 'TRIG', options: IO_PINS.map((p) => [pinNumber(p), p]) },
+        { type: 'field_dropdown', name: 'ECHO', options: IO_PINS.map((p) => [pinNumber(p), p]) }
+      ],
+      { output: 'Number' }
+    ),
     // Arduino inputs
     def('ard_analog_read', 'sensor_blocks', 'blk.analogRead', [{ type: 'field_dropdown', name: 'PIN', options: ANALOG_PINS.map((p) => [p, p]) }], {
       output: 'Number'
@@ -436,20 +495,32 @@ export function arduinoToolbox(): Blockly.utils.toolbox.ToolboxDefinition {
           b('ard_digital_write', undefined, { PIN: 'D13', STATE: 'HIGH' }),
           b('ard_builtin_led', undefined, { STATE: 'ON' }),
           b('ard_analog_write', num('VALUE', 128), { PIN: 'D9' }),
-          b('ard_servo', num('ANGLE', 90), { PIN: 'D9' })
+          b('ard_pin_mode', undefined, { PIN: 'D2', MODE: 'INPUT_PULLUP' }),
+          b('ard_servo', num('ANGLE', 90), { PIN: 'D9' }),
+          b('ard_tone', num('FREQ', 440), { PIN: 'D8' }),
+          b('ard_tone_for', { ...num('FREQ', 440), ...num('MS', 500) }, { PIN: 'D8' }),
+          b('ard_no_tone', undefined, { PIN: 'D8' })
         ]
       },
       {
         kind: 'category',
         name: t('blk.catInput'),
         categorystyle: 'sensor_category',
-        contents: [b('ard_analog_read', undefined, { PIN: 'A0' }), b('ard_digital_read', undefined, { PIN: 'D2' })]
+        contents: [
+          b('ard_analog_read', undefined, { PIN: 'A0' }),
+          b('ard_digital_read', undefined, { PIN: 'D2' }),
+          b('ard_ultrasonic', undefined, { TRIG: 'D9', ECHO: 'D10' })
+        ]
       },
       {
         kind: 'category',
         name: t('blk.catSerial'),
         categorystyle: 'looks_category',
-        contents: [b('ard_serial_println', { TEXT: { shadow: { type: 'robo_text', fields: { TEXT: 'Hello!' } } } })]
+        contents: [
+          b('ard_serial_println', { TEXT: { shadow: { type: 'robo_text', fields: { TEXT: 'Hello!' } } } }),
+          b('ard_lcd_print', { ...num('COL', 0), TEXT: { shadow: { type: 'robo_text', fields: { TEXT: 'Hello!' } } } }, { ROW: '0' }),
+          b('ard_lcd_clear')
+        ]
       },
       ...commonCategories([b('robo_timer')])
     ]

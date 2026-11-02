@@ -112,3 +112,175 @@ export function breadboardCircuit(): Circuit {
     ]
   }
 }
+
+// ---------------------------------------------------------------- 0.3 examples
+
+type Pt = [number, number]
+const wire = (a: [string, string], b: [string, string], color: string, points: Pt[] = []) => ({
+  id: newId(),
+  a: { part: a[0], pin: a[1] },
+  b: { part: b[0], pin: b[1] },
+  points,
+  color
+})
+const blk = (type: string, inputs: Record<string, unknown> = {}, fields: Record<string, unknown> = {}): BlockJson => ({ type, id: newId(), inputs, fields }) as BlockJson
+const txt = (s: string) => ({ shadow: { type: 'robo_text', id: newId(), fields: { TEXT: s } } })
+const startWith = (body: BlockJson[], variables: { name: string; id: string }[] = []) => ({
+  ...(variables.length ? { variables } : {}),
+  blocks: { languageVersion: 0, blocks: [{ type: 'robo_start', id: newId(), x: 30, y: 30, next: { block: chain(body) } }] }
+})
+const RED = '#d8352a'
+const BLACK = '#222222'
+
+/**
+ * A night light: a photoresistor and a 10 kΩ resistor make a divider on A0; when the room gets
+ * dark the reading falls and the LED on pin 9 comes on. A desk lamp (off) lies next to it.
+ */
+export function nightLightCircuit(): Circuit {
+  const uno = newId()
+  const ldr = newId()
+  const rd = newId()
+  const led = newId()
+  const rl = newId()
+  const v = newId()
+  const get = () => ({ block: { type: 'variables_get', id: newId(), fields: { VAR: { id: v } } } })
+  const loop = blk('robo_forever', {
+    DO: {
+      block: chain([
+        blk('variables_set', { VALUE: { block: blk('ard_analog_read', {}, { PIN: 'A0' }) } }, { VAR: { id: v } }),
+        blk('ard_serial_println', { TEXT: get() }),
+        blk(
+          'robo_if_else',
+          {
+            COND: { block: blk('robo_compare', { A: get(), B: num(500) }, { OP: 'LT' }) },
+            DO: { block: blk('ard_digital_write', {}, { PIN: 'D9', STATE: 'HIGH' }) },
+            ELSE: { block: blk('ard_digital_write', {}, { PIN: 'D9', STATE: 'LOW' }) }
+          },
+          {}
+        ),
+        wait(0.2)
+      ])
+    }
+  })
+  return {
+    parts: [
+      { id: uno, kind: 'arduino', x: 0, y: 0, rot: 0, program: startWith([loop], [{ name: 'свет', id: v }]) },
+      { id: ldr, kind: 'ldr', x: 85, y: 70, rot: 0 },
+      { id: rd, kind: 'resistor', x: 95, y: 80, rot: 0, ohms: 10_000 },
+      { id: led, kind: 'led', x: 85, y: -25, rot: 0, color: 'yellow' },
+      { id: rl, kind: 'resistor', x: 95, y: -35, rot: 0, ohms: 220 }
+    ],
+    wires: [
+      wire([uno, '5V'], [ldr, '1'], RED, [[36.86, 70]]),
+      wire([ldr, '2'], [rd, '1'], '#e8b10b', [[90.08, 80]]),
+      wire([rd, '2'], [uno, 'GND.3'], BLACK, [[110, 80], [110, 88], [41.94, 88]]),
+      wire([uno, 'A0'], [ldr, '2'], '#e8b10b', [[49.8, 64], [90.08, 64]]),
+      wire([uno, 'D9'], [rl, '2'], '#2e9e44', [[37.82, -45], [105.16, -45]]),
+      wire([rl, '1'], [led, 'anode'], RED, [[95, -25]]),
+      wire([led, 'cathode'], [uno, 'GND.1'], BLACK, [[80, -25], [80, -12], [25.12, -12]])
+    ],
+    room: { temp: 22, light: 300, items: [{ id: newId(), kind: 'lamp', x: 150, y: 70 }] }
+  }
+}
+
+/**
+ * A parking sensor: the ultrasonic sensor measures the distance to the box in front of it, the
+ * LCD shows it, the buzzer beeps when the box is closer than 30 cm.
+ */
+export function parkingCircuit(): Circuit {
+  const uno = newId()
+  const sonar = newId()
+  const buzzer = newId()
+  const lcd = newId()
+  const d = newId()
+  const get = () => ({ block: { type: 'variables_get', id: newId(), fields: { VAR: { id: d } } } })
+  const near = blk('robo_logic', { A: { block: blk('robo_compare', { A: get(), B: num(0) }, { OP: 'GT' }) }, B: { block: blk('robo_compare', { A: get(), B: num(30) }, { OP: 'LT' }) } }, { OP: 'AND' })
+  const loop = blk('robo_forever', {
+    DO: {
+      block: chain([
+        blk('variables_set', { VALUE: { block: blk('ard_ultrasonic', {}, { TRIG: 'D9', ECHO: 'D10' }) } }, { VAR: { id: d } }),
+        // wipe the old number first (a shorter one would leave its last digits on the screen)
+        blk('ard_lcd_print', { COL: num(0), TEXT: txt('    ') }, { ROW: '1' }),
+        blk('ard_lcd_print', { COL: num(0), TEXT: get() }, { ROW: '1' }),
+        blk('ard_lcd_print', { COL: num(4), TEXT: txt('cm      ') }, { ROW: '1' }),
+        blk('robo_if', { COND: { block: near }, DO: { block: blk('ard_tone_for', { FREQ: num(1000), MS: num(80) }, { PIN: 'D8' }) } }),
+        wait(0.2)
+      ])
+    }
+  })
+  return {
+    parts: [
+      {
+        id: uno,
+        kind: 'arduino',
+        x: 0,
+        y: 0,
+        rot: 0,
+        program: startWith([blk('ard_lcd_print', { COL: num(0), TEXT: txt('Distance:') }, { ROW: '0' }), loop], [{ name: 'расстояние', id: d }])
+      },
+      { id: sonar, kind: 'hcsr04', x: 100, y: -10, rot: 0 },
+      { id: buzzer, kind: 'buzzer', x: 130, y: 30, rot: 0 },
+      { id: lcd, kind: 'lcd', x: 100, y: 110, rot: 0 }
+    ],
+    wires: [
+      wire([sonar, 'VCC'], [uno, '5V'], RED, [[100, 20], [70, 20], [70, 58], [36.86, 58]]),
+      wire([sonar, 'GND'], [uno, 'GND.1'], BLACK, [[107.62, -3], [92, -3], [92, -16], [25.12, -16]]),
+      wire([sonar, 'TRIG'], [uno, 'D9'], '#ef7d1a', [[102.54, 12], [80, 12], [80, -6], [37.82, -6]]),
+      wire([sonar, 'ECHO'], [uno, 'D10'], '#2e9e44', [[105.08, 8], [84, 8], [84, -10], [35.28, -10]]),
+      wire([buzzer, '+'], [uno, 'D8'], '#8a45c7', [[130, 16], [118, 16], [118, -20], [40.36, -20]]),
+      wire([buzzer, '-'], [uno, 'GND.2'], BLACK, [[137.62, 62], [39.4, 62]]),
+      wire([lcd, 'GND'], [uno, 'GND.3'], BLACK, [[100, 118], [41.94, 118]]),
+      wire([lcd, 'VCC'], [uno, '5V'], RED, [[102.54, 122], [36.86, 122]]),
+      wire([lcd, 'SDA'], [uno, 'A4'], '#2f6fd6', [[105.08, 126], [59.96, 126]]),
+      wire([lcd, 'SCL'], [uno, 'A5'], '#e8b10b', [[107.62, 130], [62.5, 130]])
+    ],
+    room: { temp: 22, light: 300, items: [{ id: newId(), kind: 'box', x: 103.81, y: -10 - 13.6 - 250 - 25 }] }
+  }
+}
+
+/**
+ * A button starts a motor: the button pulls pin 2 to ground (its pull-up on), pin 9 switches a
+ * transistor through 220 Ω; the motor runs from a 9 V battery, a diode guards the transistor.
+ */
+export function motorButtonCircuit(): Circuit {
+  const uno = newId()
+  const btn = newId()
+  const bat = newId()
+  const mot = newId()
+  const npn = newId()
+  const rb = newId()
+  const dio = newId()
+  const pressed = blk('robo_not', { A: { block: blk('ard_digital_read', {}, { PIN: 'D2' }) } })
+  const loop = blk('robo_forever', {
+    DO: {
+      block: blk('robo_if_else', {
+        COND: { block: pressed },
+        DO: { block: blk('ard_digital_write', {}, { PIN: 'D9', STATE: 'HIGH' }) },
+        ELSE: { block: blk('ard_digital_write', {}, { PIN: 'D9', STATE: 'LOW' }) }
+      })
+    }
+  })
+  return {
+    parts: [
+      { id: uno, kind: 'arduino', x: 0, y: 0, rot: 0, program: startWith([blk('ard_pin_mode', {}, { PIN: 'D2', MODE: 'INPUT_PULLUP' }), loop]) },
+      { id: btn, kind: 'button', x: 85, y: 20, rot: 0 },
+      { id: bat, kind: 'battery', x: 170, y: 40, rot: 0, volts: 9 },
+      { id: mot, kind: 'motor', x: 120, y: 60, rot: 0 },
+      { id: npn, kind: 'npn', x: 120, y: 95, rot: 0 },
+      { id: rb, kind: 'resistor', x: 90, y: 105, rot: 0, ohms: 220 },
+      { id: dio, kind: 'diode', x: 140, y: 75, rot: 0 }
+    ],
+    wires: [
+      wire([uno, 'D2'], [btn, '1a'], '#2e9e44', [[56.9, -4], [78, -4], [78, 20]]),
+      wire([btn, '2b'], [uno, 'GND.1'], BLACK, [[95, 14.92], [95, -8], [25.12, -8]]),
+      wire([bat, '+'], [mot, '1'], RED, [[170, 48], [120, 48]]),
+      wire([bat, '-'], [uno, 'GND.3'], BLACK, [[172.54, 125], [41.94, 125]]),
+      wire([mot, '2'], [npn, 'C'], '#ef7d1a', [[127.62, 85], [125.08, 85]]),
+      wire([npn, 'E'], [uno, 'GND.2'], BLACK, [[115, 95], [115, 118], [39.4, 118]]),
+      wire([uno, 'D9'], [rb, '1'], '#2f6fd6', [[37.82, -14], [70, -14], [70, 105]]),
+      wire([rb, '2'], [npn, 'B'], '#2f6fd6', [[122.54, 105]]),
+      wire([dio, 'A'], [mot, '2'], '#8a45c7', [[140, 80], [127.62, 80]]),
+      wire([dio, 'K'], [bat, '+'], RED, [[150.16, 52], [170, 52]])
+    ]
+  }
+}

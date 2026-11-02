@@ -70,6 +70,16 @@ export class Physics implements Probe {
 
     // platforms, ramps and bridges: fixed; shapes stand on them and fall off them, the sonar sees them
     for (const t of terrain) {
+      if (t.kind === 'solid') {
+        // a static shape: its own triangles, already in world coordinates
+        const g = t.grid
+        if (!g || g.indices.length < 3) continue
+        const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+        const pts = new Float32Array(g.positions.length)
+        for (let i = 0; i < pts.length; i++) pts[i] = g.positions[i] * MM
+        this.owner.set(this.world.createCollider(RAPIER.ColliderDesc.trimesh(pts, g.indices).setFriction(0.7), body).handle, t.id)
+        continue
+      }
       // a piece built on another (or scenery on a platform) stands at its base
       const base = t.base ?? 0
       const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(t.x * MM, t.y * MM, base * MM).setRotation(zQuat(t.angle)))

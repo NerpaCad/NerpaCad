@@ -1,14 +1,61 @@
 /**
- * Mods: robots made by anyone, added without changing the app. A mod is a folder in the app's
- * mods folder with a `mod.json` and the 3D model files it names. It is data only — sizes, pads,
- * colours, model files — never code, so a mod cannot do anything but look and drive like a robot.
- * The format is described for mod makers in `MODS.md`.
+ * Mods: robots, heroes and field pieces made by anyone, added without changing the app. A mod is
+ * a folder in the app's mods folder with a `mod.json` and the 3D model files it names. It is data
+ * only — sizes, pads, colours, model files — never code, so a mod cannot do anything but look and
+ * drive like a robot, move like one of the built-in heroes, or stand on the field like terrain or
+ * scenery. The format is described for mod makers in `MODS.md`.
  *
  * `parseMod` checks a `mod.json` and turns it into robot descriptions (`RobotSpec`), with every
  * number clamped to something the field can work with. What is wrong is reported, not guessed.
  */
-import { SENSOR_TYPES, type SensorType } from '../doc/model'
+import { SENSOR_TYPES, SPECIES, type SensorType, type Species } from '../doc/model'
 import { type Axis, type ColorRule, type LocalText, type ModelPlacement, type PadSpec, ROBOT_ID, type RobotSpec } from './robot'
+import type { NerpaAnim } from './nerpa'
+
+/** A hero of a mod: its own model and name, moving like one of the built-in heroes (`like`). */
+export interface HeroSpec {
+  id: string
+  name: LocalText
+  mod: string
+  like: Species
+  model: ModelPlacement
+  /** which clip of the model plays for each motion (regular expressions; missing: the idle one, or a still pose) */
+  clips: Partial<Record<NerpaAnim, string>>
+  /** parts painted in the hero's colour (a regular expression; none: the model keeps its colours) */
+  tint?: string
+  /** the colour of a new one */
+  color: string
+}
+
+/** A piece for the field from a mod: relief (snapped to the tile grid) or scenery, static or movable. */
+export interface PropSpec {
+  id: string
+  name: LocalText
+  mod: string
+  section: 'relief' | 'decor'
+  model: ModelPlacement
+  /** it does not move (robots and heroes go over it like terrain); otherwise it can be pushed */
+  static: boolean
+  /** weight of a movable one, g (none: from its volume) */
+  mass?: number
+}
+
+/** the heroes and the pieces of the installed mods, by id */
+export const HEROES: Record<string, HeroSpec> = {}
+export const PROPS: Record<string, PropSpec> = {}
+export const heroSpec = (id: string | undefined): HeroSpec | null => (id ? (HEROES[id] ?? null) : null)
+export const propSpec = (id: string | undefined): PropSpec | null => (id ? (PROPS[id] ?? null) : null)
+/** Add a mod's hero / piece (false: the id is taken). */
+export function registerHero(h: HeroSpec): boolean {
+  if (HEROES[h.id] || SPECIES.includes(h.id as Species)) return false
+  HEROES[h.id] = h
+  return true
+}
+export function registerProp(p: PropSpec): boolean {
+  if (PROPS[p.id]) return false
+  PROPS[p.id] = p
+  return true
+}
 
 /** what `mod.json` says it is */
 export const MOD_FORMAT = 'nerpacad-mod'
@@ -25,6 +72,8 @@ export interface ModInfo {
   description?: LocalText
   homepage?: string
   robots: RobotSpec[]
+  heroes: HeroSpec[]
+  props: PropSpec[]
 }
 
 export interface ParsedMod {
@@ -37,6 +86,8 @@ const AXES: Axis[] = ['+x', '-x', '+y', '-y', '+z', '-z']
 const MODEL_EXT = /\.(glb|gltf|fbx)$/i
 const COLOR = /^#[0-9a-f]{6}$/i
 const MAX_ROBOTS = 16
+const MAX_ITEMS = 64
+const ANIMS: NerpaAnim[] = ['idle', 'walk', 'run', 'swim', 'leap', 'fly', 'takeoff', 'land', 'touchdown', 'fall', 'crouch', 'crawl']
 const MAX_PADS = 16
 const MAX_RULES = 64
 
@@ -45,7 +96,8 @@ const isObj = (v: unknown): v is Json => !!v && typeof v === 'object' && !Array.
 
 /**
  * Check a mod: `text` is its `mod.json`, `base` the URL its files are under (ending in /). Ids of
- * robots that are already taken (`taken`) are refused, so a mod cannot replace another's robot.
+ * robots, heroes and pieces that are already taken (`taken`) are refused, so a mod cannot replace
+ * another's.
  */
 export function parseMod(text: string, base: string, taken: ReadonlySet<string> = new Set()): ParsedMod {
   const errors: string[] = []
@@ -64,7 +116,9 @@ export function parseMod(text: string, base: string, taken: ReadonlySet<string> 
   const name = text_(j.name) ?? id
   const robots: RobotSpec[] = []
   const list = Array.isArray(j.robots) ? j.robots : []
-  if (!list.length) errors.push('mod.json: no "robots"')
+  const heroList = Array.isArray(j.heroes) ? j.heroes : []
+  const propList = Array.isArray(j.props) ? j.props : []
+  if (!list.length && !heroList.length && !propList.length) errors.push('mod.json: no "robots", "heroes" or "props"')
   for (const [i, r] of list.slice(0, MAX_ROBOTS).entries()) {
     const where = `robots[${i}]`
     const spec = robot(r, base, id, where, errors)
@@ -75,11 +129,28 @@ export function parseMod(text: string, base: string, taken: ReadonlySet<string> 
     }
     robots.push(spec)
   }
-  if (!robots.length) return { mod: null, errors }
+  const heroes: HeroSpec[] = []
+  const props: PropSpec[] = []
+  const used = (x: string) => taken.has(x) || SPECIES.includes(x as Species) || robots.some((r) => r.id === x) || heroes.some((h) => h.id === x) || props.some((q) => q.id === x)
+  for (const [i, h] of heroList.slice(0, MAX_ITEMS).entries()) {
+    const where = `heroes[${i}]`
+    const spec = hero(h, base, id, where, errors)
+    if (!spec) continue
+    if (used(spec.id)) errors.push(`${where}: the id "${spec.id}" is already taken`)
+    else heroes.push(spec)
+  }
+  for (const [i, q] of propList.slice(0, MAX_ITEMS).entries()) {
+    const where = `props[${i}]`
+    const spec = prop(q, base, id, where, errors)
+    if (!spec) continue
+    if (used(spec.id)) errors.push(`${where}: the id "${spec.id}" is already taken`)
+    else props.push(spec)
+  }
+  if (!robots.length && !heroes.length && !props.length) return { mod: null, errors }
   const str = (v: unknown, max = 200) => (typeof v === 'string' ? v.slice(0, max) : '')
   const homepage = typeof j.homepage === 'string' && /^https?:\/\//.test(j.homepage) ? j.homepage.slice(0, 300) : undefined
   return {
-    mod: { id, name, version: str(j.version, 40), author: str(j.author), license: str(j.license, 100), description: text_(j.description), homepage, robots },
+    mod: { id, name, version: str(j.version, 40), author: str(j.author), license: str(j.license, 100), description: text_(j.description), homepage, robots, heroes, props },
     errors
   }
 }
@@ -163,6 +234,60 @@ function robot(r: unknown, base: string, mod: string, where: string, errors: str
     spec.modules = modules
   }
   return spec
+}
+
+/** An id of a hero or a piece (the same rules as a robot's). */
+function itemId(r: Json, where: string, errors: string[]): string | null {
+  if (typeof r.id === 'string' && ROBOT_ID.test(r.id)) return r.id
+  errors.push(`${where}: "id" must be letters, digits, ".", "_" or "-"`)
+  return null
+}
+
+function hero(h: unknown, base: string, mod: string, where: string, errors: string[]): HeroSpec | null {
+  if (!isObj(h)) {
+    errors.push(`${where}: not an object`)
+    return null
+  }
+  const id = itemId(h, where, errors)
+  if (!id) return null
+  if (!SPECIES.includes(h.like as Species)) {
+    errors.push(`${where}.like: one of ${SPECIES.join(', ')} (the hero moves like it)`)
+    return null
+  }
+  const model = placement(h.model, base, `${where}.model`, errors)
+  if (!model) return null
+  const clips: HeroSpec['clips'] = {}
+  if (isObj(h.clips)) {
+    for (const [k, v] of Object.entries(h.clips)) {
+      if (!ANIMS.includes(k as NerpaAnim)) errors.push(`${where}.clips: unknown motion "${k}" (${ANIMS.join(', ')})`)
+      else if (typeof v !== 'string' || !validRegex(v)) errors.push(`${where}.clips.${k}: a regular expression is needed`)
+      else clips[k as NerpaAnim] = v
+    }
+  }
+  const tint = typeof h.tint === 'string' && validRegex(h.tint) ? h.tint : undefined
+  if (h.tint !== undefined && !tint) errors.push(`${where}.tint: a regular expression is needed`)
+  const color = typeof h.color === 'string' && COLOR.test(h.color) ? h.color : '#8f9aa6'
+  return { id, name: text_(h.name) ?? id, mod, like: h.like as Species, model, clips, tint, color }
+}
+
+function prop(q: unknown, base: string, mod: string, where: string, errors: string[]): PropSpec | null {
+  if (!isObj(q)) {
+    errors.push(`${where}: not an object`)
+    return null
+  }
+  const id = itemId(q, where, errors)
+  if (!id) return null
+  const section = q.section === undefined ? 'decor' : q.section
+  if (section !== 'relief' && section !== 'decor') {
+    errors.push(`${where}.section: "relief" or "decor"`)
+    return null
+  }
+  const model = placement(q.model, base, `${where}.model`, errors)
+  if (!model) return null
+  const isStatic = q.static === undefined ? true : q.static === true
+  if (q.static !== undefined && typeof q.static !== 'boolean') errors.push(`${where}.static: true or false`)
+  const mass = q.mass === undefined ? undefined : num(q.mass, 1, 1e6, undefined, `${where}.mass`, errors)
+  return { id, name: text_(q.name) ?? id, mod, section, model, static: isStatic, ...(mass !== undefined ? { mass } : {}) }
 }
 
 /** Where a model file goes in its frame (a robot's, or a pad's for a module). */

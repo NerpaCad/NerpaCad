@@ -1,6 +1,6 @@
 /** Checks a circuit read from a file; returns a clean copy or null. */
 import { validProgram } from '../io/program'
-import { type Circuit, LED_COLORS, type LedColor, type Part, type Wire } from './model'
+import { type Circuit, LED_COLORS, type LedColor, type Part, ROOM_ITEM_KINDS, type Room, type RoomItem, type RoomItemKind, type Wire } from './model'
 import { SPECS } from './parts'
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) < 1e6
@@ -34,6 +34,10 @@ export function validateCircuit(raw: unknown): Circuit | null {
       if (!validProgram(p.program)) return null
       part.program = p.program
     }
+    if (p.kind === 'battery') part.volts = p.volts === 3 ? 3 : 9
+    if (p.kind === 'meter') part.mode = p.mode === 'A' ? 'A' : 'V'
+    if (p.kind === 'switch' && p.on === true) part.on = true
+    if (p.kind === 'buzzer' && p.active === true) part.active = true
     parts.push(part)
   }
   const pinOk = (r: unknown) => {
@@ -50,5 +54,19 @@ export function validateCircuit(raw: unknown): Circuit | null {
     ids.add(w.id)
     wires.push({ id: w.id, a: { part: w.a.part, pin: w.a.pin }, b: { part: w.b.part, pin: w.b.pin }, points: w.points.map((q) => [q[0], q[1]]), color: w.color })
   }
-  return { parts, wires }
+  const room = c.room === undefined ? undefined : validateRoom(c.room, ids)
+  if (c.room !== undefined && !room) return null
+  return { parts, wires, ...(room ? { room } : {}) }
+}
+
+function validateRoom(raw: unknown, ids: Set<string>): Room | null {
+  const r = raw as Partial<Room> | null
+  if (!r || typeof r !== 'object' || !num(r.temp) || !num(r.light) || !Array.isArray(r.items) || r.items.length > 200) return null
+  const items: RoomItem[] = []
+  for (const it of r.items) {
+    if (!it || !str(it.id) || ids.has(it.id) || !ROOM_ITEM_KINDS.includes(it.kind as RoomItemKind) || !num(it.x) || !num(it.y)) return null
+    ids.add(it.id)
+    items.push({ id: it.id, kind: it.kind, x: it.x, y: it.y, ...(it.kind === 'lamp' && it.on === true ? { on: true } : {}) })
+  }
+  return { temp: Math.max(-40, Math.min(80, r.temp!)), light: Math.max(0, Math.min(100_000, r.light!)), items }
 }

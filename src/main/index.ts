@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, shell } from 'electron'
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { rmSync } from 'node:fs'
 import { basename, extname, join, normalize, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -238,6 +238,80 @@ async function scanMods(): Promise<FoundMod[]> {
   return out
 }
 
+// ---------------------------------------------------------------- recent projects
+
+/** the projects opened and saved last (the start screen offers them), newest first */
+const recentFile = () => process.env.CAD_RECENT_FILE || join(app.getPath('userData'), 'recent.json')
+const RECENT_MAX = 8
+
+interface RecentEntry {
+  path: string
+  name: string
+  at: number
+  /** a small picture of the project (a JPEG data URL) */
+  thumb?: string
+}
+
+async function readRecent(): Promise<RecentEntry[]> {
+  try {
+    const list = JSON.parse(await readFile(recentFile(), 'utf8'))
+    return Array.isArray(list)
+      ? list.filter((e) => e && typeof e.path === 'string' && typeof e.name === 'string').slice(0, RECENT_MAX)
+      : []
+  } catch {
+    return []
+  }
+}
+
+/** one change of the list at a time */
+let recentQueue: Promise<unknown> = Promise.resolve()
+function changeRecent(fn: (list: RecentEntry[]) => RecentEntry[]): Promise<boolean> {
+  const run = recentQueue.then(async () => {
+    const list = fn(await readRecent()).slice(0, RECENT_MAX)
+    await mkdir(join(recentFile(), '..'), { recursive: true })
+    await writeFile(recentFile(), JSON.stringify(list))
+    return true
+  })
+  recentQueue = run.catch(() => undefined)
+  return run.catch(() => false)
+}
+
+function registerRecent(): void {
+  // the list, each with whether its file is still there
+  ipcMain.handle('recent:list', async () => {
+    const list = await readRecent()
+    return Promise.all(
+      list.map(async (e) => {
+        try {
+          await stat(e.path)
+          return { ...e, missing: false }
+        } catch {
+          return { ...e, missing: true }
+        }
+      })
+    )
+  })
+  ipcMain.handle('recent:add', (_e, entry: { path: string; name: string; thumb?: string }) => {
+    if (typeof entry?.path !== 'string' || typeof entry.name !== 'string') return false
+    const thumb = typeof entry.thumb === 'string' && entry.thumb.startsWith('data:image/') && entry.thumb.length < 400_000 ? entry.thumb : undefined
+    return changeRecent((list) => {
+      const old = list.find((e) => e.path === entry.path)
+      const e: RecentEntry = { path: entry.path, name: entry.name, at: Date.now(), ...((thumb ?? old?.thumb) ? { thumb: thumb ?? old?.thumb } : {}) }
+      return [e, ...list.filter((x) => x.path !== entry.path)]
+    })
+  })
+  ipcMain.handle('recent:remove', (_e, path: string) => changeRecent((list) => list.filter((x) => x.path !== path)))
+  // only a project of the list can be opened this way
+  ipcMain.handle('recent:open', async (_e, path: string) => {
+    if (!(await readRecent()).some((e) => e.path === path)) return null
+    try {
+      return await readForRenderer(path)
+    } catch {
+      return null
+    }
+  })
+}
+
 function registerMods(): void {
   ipcMain.handle('mods:list', () => scanMods())
   ipcMain.handle('mods:openFolder', async () => {
@@ -260,6 +334,7 @@ function registerMods(): void {
 function registerIpc(): void {
   registerAutosave()
   registerMods()
+  registerRecent()
   ipcMain.handle('file:open', async (_e, kind: FileKind) => {
     if (!mainWindow) return null
     const r = await dialog.showOpenDialog(mainWindow, {

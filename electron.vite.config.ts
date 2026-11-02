@@ -23,6 +23,7 @@ export default defineConfig({
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
       __APP_HOMEPAGE__: JSON.stringify(pkg.homepage ?? ''),
+      __APP_AUTHOR__: JSON.stringify(typeof pkg.author === 'string' ? pkg.author : ''),
       __APP_REPO__: JSON.stringify(repoUrl())
     },
     resolve: {

@@ -65,6 +65,12 @@ interface HandleObj {
   pick: Mesh
 }
 
+/** A rim colour that stands out from `c`: white round a dark colour, near-black round a light one. */
+export function rimFor(c: string): string {
+  const k = new Color(c)
+  return 0.2126 * k.r + 0.7152 * k.g + 0.0722 * k.b < 0.45 ? '#ffffff' : '#15171f'
+}
+
 const onTop = (o: Object3D) => {
   o.renderOrder = 1000
   o.traverse((c) => {
@@ -110,6 +116,11 @@ export class Gizmo {
   readonly root = new Group()
   private handles: HandleObj[] = []
   private outlineMats: LineBasicMaterial[] = []
+  /**
+   * The light (or dark) rims drawn behind the handles, each with the colour it stands out from:
+   * a handle is seen on a shape of its own colour too
+   */
+  private rims: { mat: MeshBasicMaterial; of: () => string }[] = []
   private target: GizmoTarget | null = null
   private hovered: HandleObj | null = null
   private active: HandleObj | null = null
@@ -127,7 +138,7 @@ export class Gizmo {
     this.root.visible = false
     const square = new PlaneGeometry(1, 1)
     const squareEdges = new EdgesGeometry(square)
-    const mkSquare = (spec: HandleSpec, color: string, size: number) => {
+    const mkSquare = (spec: HandleSpec, color: string, size: number, of: () => string) => {
       const mat = new MeshBasicMaterial({ color, side: DoubleSide })
       const m = new Mesh(square, mat)
       m.scale.setScalar(size)
@@ -135,8 +146,12 @@ export class Gizmo {
       this.outlineMats.push(om)
       const e = new LineSegments(squareEdges, om)
       m.add(e)
+      // a rim 2 px wide all round
+      const rim = new Mesh(square, this.rim(of))
+      rim.scale.setScalar(size + 4)
+      rim.name = 'rim'
       const holder = new Group()
-      holder.add(m)
+      holder.add(rim, m)
       this.add({
         spec,
         obj: holder,
@@ -147,18 +162,23 @@ export class Gizmo {
       })
     }
     for (const sx of [-1, 1] as const)
-      for (const sy of [-1, 1] as const) mkSquare({ kind: 'corner', sx, sy }, THEME.handleCorner, 9)
+      for (const sy of [-1, 1] as const) mkSquare({ kind: 'corner', sx, sy }, THEME.handleCorner, 9, () => THEME.handleCorner)
     for (const axis of [0, 1] as const)
-      for (const s of [-1, 1] as const) mkSquare({ kind: 'side', axis, s }, THEME.handleSide, 7)
-    mkSquare({ kind: 'height' }, THEME.handleCorner, 9)
+      for (const s of [-1, 1] as const) mkSquare({ kind: 'side', axis, s }, THEME.handleSide, 7, () => THEME.handleSide)
+    mkSquare({ kind: 'height' }, THEME.handleCorner, 9, () => THEME.handleCorner)
 
-    // lift cone
+    // lift cone, with a rim of the opposite brightness drawn behind it: seen on a dark shape and
+    // on a light one alike
     {
       const mat = new MeshBasicMaterial({ color: THEME.lift })
       const cone = new Mesh(new ConeGeometry(5, 14, 20), mat)
       cone.rotation.x = Math.PI / 2 // ConeGeometry points +Y; make it point +Z
+      const rim = new Mesh(new ConeGeometry(7.2, 18.5, 20), this.rim(() => THEME.lift))
+      rim.rotation.x = Math.PI / 2
+      rim.position.z = 0.6
+      rim.name = 'lift-rim'
       const holder = new Group()
-      holder.add(cone)
+      holder.add(rim, cone)
       this.add({
         spec: { kind: 'lift' },
         obj: holder,
@@ -177,8 +197,10 @@ export class Gizmo {
       const fill = new Mesh(new BufferGeometry(), fillMat)
       const outline = new LineLoop(new BufferGeometry(), lineMat)
       const pick = new Mesh(new BufferGeometry(), new MeshBasicMaterial({ visible: false, side: DoubleSide }))
+      const rim = new Mesh(new BufferGeometry(), this.rim(() => THEME.rotate))
+      rim.name = 'rim'
       const holder = new Group()
-      holder.add(fill, outline, pick)
+      holder.add(fill, outline, pick, rim)
       this.add({
         spec: { kind: 'rotate', axis },
         obj: holder,
@@ -190,8 +212,18 @@ export class Gizmo {
     }
   }
 
+  private rim(of: () => string): MeshBasicMaterial {
+    const mat = new MeshBasicMaterial({ color: rimFor(of()), side: DoubleSide })
+    this.rims.push({ mat, of })
+    return mat
+  }
+
   private add(h: HandleObj): void {
     onTop(h.obj)
+    // the rims under their handles
+    h.obj.traverse((c) => {
+      if (this.rims.some((r) => (c as Mesh).material === r.mat)) c.renderOrder = 999
+    })
     h.obj.userData.handle = h
     h.pick.userData.handle = h
     this.handles.push(h)
@@ -214,6 +246,7 @@ export class Gizmo {
       h.hot.set(k === 'rotate' ? THEME.rotateHot : THEME.handleHot)
     }
     this.outlineMats.forEach((m) => m.color.set(THEME.handleOutline))
+    for (const r of this.rims) r.mat.color.set(rimFor(r.of()))
     this.recolor()
   }
 
@@ -249,6 +282,34 @@ export class Gizmo {
       const hot = h === this.hovered || h === this.active
       h.mats.forEach((m) => m.color.copy(hot ? h.hot : h.base))
     }
+  }
+
+  /**
+   * Where the handles are on screen (points along their outlines and their middles), for the
+   * size labels to keep clear of them. `project`: world point → screen, or null behind the camera.
+   */
+  screenPoints(project: (p: Vector3) => { x: number; y: number } | null): [number, number][] {
+    const out: [number, number][] = []
+    if (!this.root.visible) return out
+    this.root.updateMatrixWorld(true)
+    const v = new Vector3()
+    const add = (p: Vector3) => {
+      const s = project(p)
+      if (s) out.push([s.x, s.y])
+    }
+    for (const h of this.handles) {
+      if (!h.obj.visible) continue
+      add(h.obj.getWorldPosition(v))
+      h.obj.traverse((c) => {
+        const m = c as Mesh
+        if (!m.isMesh || (m.material as MeshBasicMaterial).visible === false) return
+        const pos = m.geometry.getAttribute('position')
+        if (!pos) return
+        const step = Math.max(1, Math.floor(pos.count / 24))
+        for (let i = 0; i < pos.count; i += step) add(v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld))
+      })
+    }
+    return out
   }
 
   pick(ray: Raycaster): HandleSpec | null {
@@ -445,13 +506,18 @@ export class Gizmo {
     const span = Math.min((120 * k) / radius, 1.3)
     const outline = arrowOutline(radius, span, 2.6 * k, 12 * k, 7.5 * k)
     const pickOutline = arrowOutline(radius, span, 9 * k, 12 * k, 12 * k)
-    const [fill, line, pick] = h.obj.children as [Mesh, LineLoop, Mesh]
+    // the rim: the same arrow 2 px fatter all round (its tips 2 px further out)
+    const e = 2 * k
+    const rimOutline = arrowOutline(radius, span + (2 * e) / radius, 2.6 * k + e, 12 * k + e, 7.5 * k + e * 1.6)
+    const [fill, line, pick, rim] = h.obj.children as [Mesh, LineLoop, Mesh, Mesh]
     fill.geometry.dispose()
     line.geometry.dispose()
     pick.geometry.dispose()
+    rim.geometry.dispose()
     fill.geometry = shapeGeometry(outline)
     line.geometry = loopGeometry(outline)
     pick.geometry = shapeGeometry(pickOutline)
+    rim.geometry = shapeGeometry(rimOutline)
     const spin = new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), theta)
     h.obj.position.copy(center.applyMatrix4(P))
     h.obj.quaternion.copy(planeQ).multiply(axisBasis(axis)).multiply(spin)

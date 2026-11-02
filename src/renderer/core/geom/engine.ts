@@ -327,8 +327,16 @@ export class GeomEngine {
           m = made
         } catch {
           made?.delete()
-          this.errors.set(key, 'notManifold')
-          m = new Manifold(emptyMesh(this.w))
+          if (p.prop && md.vertices.length >= 12) {
+            // a piece from a mod is shown by its own model and walked on by its triangles: here
+            // (picking it, its weight, pushing it) its outline will do
+            const pts: [number, number, number][] = []
+            for (let i = 0; i + 2 < md.vertices.length; i += 3) pts.push([md.vertices[i], md.vertices[i + 1], md.vertices[i + 2]])
+            m = Manifold.hull(pts)
+          } else {
+            this.errors.set(key, 'notManifold')
+            m = new Manifold(emptyMesh(this.w))
+          }
         }
         return m // imported meshes are normalized at import time
       }

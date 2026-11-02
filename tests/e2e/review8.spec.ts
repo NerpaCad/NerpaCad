@@ -84,7 +84,7 @@ test('landscape: Ctrl+D on a tile keeps one tile on the cell; the Inspector chan
 
   // a lamp tile focused with the keyboard: Space adds a lamp and does not start the run
   const lamps = async () => (await nodes(win)).filter((n: any) => n.prim === 'light').length
-  const btn = win.locator('[data-testid^=add-lamp]').first()
+  const btn = win.getByTestId('add-light')
   await btn.scrollIntoViewIfNeeded()
   await btn.focus()
   await win.keyboard.press(' ')

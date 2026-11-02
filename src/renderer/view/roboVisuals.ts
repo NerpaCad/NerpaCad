@@ -4,6 +4,7 @@
  * that have sensors; everything visual is built here.
  */
 import {
+  type AnimationClip,
   CanvasTexture,
   Color,
   ConeGeometry,
@@ -29,7 +30,8 @@ import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { type LightParams, type RobotSensor, SENSOR_TYPES, type SensorType, type TileKind } from '../core/doc/model'
 import { type ColorRule, MODULE, type ModelPlacement, type PadSpec, ROBOTS, type RobotSpec } from '../core/robotics/robot'
-import { axisVector } from '../core/robotics/mods'
+import { PROPS, axisVector } from '../core/robotics/mods'
+import { loadProps } from './modProps'
 import { MODULE_COLORS, buildModule, buildNerpaBot } from './nerpabot'
 
 export { MODULE_COLORS }
@@ -168,12 +170,24 @@ const boardMaterial = (type: SensorType) => {
   return m
 }
 
-/** Load a model file of a mod and put it in its frame (a robot's, or a pad's for a module). */
-async function loadPlaced(p: ModelPlacement, module?: SensorType): Promise<Object3D> {
+/**
+ * Load a model file of a mod and put it in its frame (a robot's, a pad's for a module, a hero's,
+ * a field piece's). Its animation clips, if any, are in `userData.clips` of the group returned.
+ */
+export async function loadPlaced(p: ModelPlacement, module?: SensorType): Promise<Object3D> {
   // a model painted by the mod's colours does not need its own pictures (missing ones are fine)
   const manager = new LoadingManager()
   if (p.defaultColor) manager.setURLModifier((u) => (/\.(png|jpe?g|tga|bmp|dds|tif)$/i.test(u) ? EMPTY_PNG : u))
-  const model = /\.fbx$/i.test(p.url) ? await new FBXLoader(manager).loadAsync(p.url) : (await new GLTFLoader(manager).loadAsync(p.url)).scene
+  let clips: AnimationClip[] = []
+  let model: Object3D
+  if (/\.fbx$/i.test(p.url)) {
+    model = await new FBXLoader(manager).loadAsync(p.url)
+    clips = (model as Object3D & { animations: AnimationClip[] }).animations ?? []
+  } else {
+    const g = await new GLTFLoader(manager).loadAsync(p.url)
+    model = g.scene
+    clips = g.animations
+  }
   const rules = p.colors.map((r) => ({ re: new RegExp(r.match, 'i'), mat: ruleMaterial(r) }))
   const board = p.board ? new RegExp(p.board, 'i') : null
   const fallback = p.defaultColor ? ruleMaterial({ match: '', color: p.defaultColor }) : null
@@ -195,6 +209,7 @@ async function loadPlaced(p: ModelPlacement, module?: SensorType): Promise<Objec
   const g = new Group()
   g.add(model)
   keepTree(g)
+  g.userData.clips = clips
   return g
 }
 
@@ -227,13 +242,13 @@ function loadModRobot(spec: RobotSpec): Promise<void> {
   return p
 }
 
-/** Load the heroes and the robots of the installed mods (once each). Resolves when they are ready. */
+/** Load the heroes, the robots and the field pieces of the installed mods (once each). Resolves when they are ready. */
 export function loadRoboModels(): Promise<void> {
   creatures ??= loadCreatures().catch((e) => console.error('creature models', e))
   const mods = Object.values(ROBOTS)
     .filter((r) => r.model)
     .map((r) => loadModRobot(r))
-  return Promise.all([creatures, ...mods]).then(() => undefined)
+  return Promise.all([creatures, loadProps(Object.values(PROPS)), ...mods]).then(() => undefined)
 }
 
 /** The models of a robot: its mod's once loaded, NerpaBot's for the rest (null: still loading). */

@@ -114,3 +114,73 @@ test('a project with a robot of a mod that is not installed: a notice, NerpaBot 
   expect((await nodes(win))[0].params.robot.model).toBe('robbo')
   await app.close()
 })
+
+test('mods: a hero of a mod and its pieces (a static relief block, a movable crate); a robot stops at the block', async () => {
+  test.setTimeout(90000)
+  const { app, win } = await launch({ CAD_MODS_DIR: MODS })
+  const errors: string[] = []
+  win.on('pageerror', (e: Error) => errors.push(e.message))
+  await win.getByTestId('mode-robotics').click()
+
+  // the hero: next to the built-in ones, moving like the seal, its body in the hero's colour
+  await expect(win.getByTestId('add-hero-testpet')).toContainText('Тестозверь')
+  await win.getByTestId('add-hero-testpet').click()
+  await idle(win)
+  const pet = (await nodes(win)).find((n: any) => n.prim === 'nerpa')
+  expect(pet.params.nerpa).toMatchObject({ species: 'seal', model: 'testpet' })
+  expect(pet.color).toBe('#ff7f50')
+  await expect.poll(async () => (await look(win, pet.id)).find((m: any) => m.name === 'body')?.color, { timeout: 10000 }).toBe('#ff7f50')
+
+  // the relief block: on the middle of a tile, static, with its triangles in the project
+  await win.getByTestId('field-tab-relief').click()
+  await win.getByTestId('prop-teststep').click()
+  await expect.poll(async () => (await nodes(win)).filter((n: any) => n.params.prop === 'teststep').length).toBe(1)
+  const block = (await nodes(win)).find((n: any) => n.params.prop === 'teststep')
+  expect(block.prim).toBe('mesh')
+  expect(block.fixed).toBe(true)
+  expect(Math.abs((block.transform.position[0] - 150) % 300)).toBe(0)
+  const tris = await cad(win, () => (window as any).__cad.doc.value.meshes['mod-teststep'].triangles.length)
+  expect(tris).toBe(72)
+  await expect
+    .poll(() => cad(win, (id: string) => (window as any).__cad.viewport.sync.objects.get(id)?.visual?.name, block.id), { timeout: 10000 })
+    .toBe('prop-visual')
+
+  // the crate: scenery that can be pushed, with its weight
+  await win.getByTestId('field-tab-decor').click()
+  await win.getByTestId('prop-testcrate').click()
+  await expect.poll(async () => (await nodes(win)).filter((n: any) => n.params.prop === 'testcrate').length).toBe(1)
+  const crate = (await nodes(win)).find((n: any) => n.params.prop === 'testcrate')
+  expect(crate.fixed).toBeUndefined()
+  expect(crate.mass).toBe(50)
+  await win.screenshot({ path: 'test-results/mods-pieces.png' })
+
+  // a robot driving at the block (175 mm high) stops at it
+  const [bx, by] = block.transform.position
+  const robot = await cad(
+    win,
+    (a: any) => {
+      const A = (window as any).__cad.actions
+      const id = A.addRobot([a.x, a.y])
+      const n = (v: number) => ({ shadow: { type: 'robo_number', fields: { NUM: v } } })
+      A.setProgram(id, {
+        blocks: { languageVersion: 0, blocks: [{ type: 'robo_start', id: 'st', x: 20, y: 20, next: { block: { type: 'robo_motors', id: 'm', inputs: { LEFT: n(70), RIGHT: n(70) } } } }] }
+      })
+      return id
+    },
+    { x: bx - 600, y: by }
+  )
+  await idle(win)
+  await win.getByTestId('sim-start').click()
+  await win.waitForTimeout(4000)
+  const rx = await cad(win, (id: string) => (window as any).__cad.viewport.sync.objects.get(id).position.x, robot)
+  await win.getByTestId('sim-stop').click()
+  expect(rx).toBeGreaterThan(bx - 450)
+  expect(rx).toBeLessThan(bx - 150)
+
+  // About lists them
+  await win.click('[data-testid=brand]')
+  await expect(win.getByTestId('mod-testbot')).toContainText('Тестозверь')
+  await expect(win.getByTestId('mod-testbot')).toContainText('Тестоблок')
+  expect(errors).toEqual([])
+  await app.close()
+})

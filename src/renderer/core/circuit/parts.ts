@@ -132,7 +132,162 @@ export const SPECS: Record<PartKind, PartSpec> = {
       { id: 'cathode', label: '−', x: 0, y: 0 },
       { id: 'anode', label: '+', x: P, y: 0 }
     ]
+  },
+
+  // ------------------------------------------------------------ wave 1
+  // a 6 mm push button: four legs, two on each side joined inside; pressing joins the sides
+  button: {
+    kind: 'button',
+    box: { x: -1.6, y: -2 * P - 1.6, w: 2 * P + 3.2, h: 2 * P + 3.2 },
+    pins: row4([
+      ['1a', '1', 0, 0],
+      ['1b', '1', 0, -2 * P],
+      ['2a', '2', 2 * P, 0],
+      ['2b', '2', 2 * P, -2 * P]
+    ]),
+    bus: [
+      ['1a', '1b'],
+      ['2a', '2b']
+    ]
+  },
+  // a slide switch: the middle leg goes to one side or the other
+  switch: {
+    kind: 'switch',
+    box: { x: -2.2, y: -6.4, w: 2 * P + 4.4, h: 7.4 },
+    pins: row(['1', 'C', '2'])
+  },
+  // a 12 mm buzzer: + and − legs 3 pitches apart
+  buzzer: {
+    kind: 'buzzer',
+    box: { x: 1.5 * P - 6.2, y: -12.6, w: 12.4, h: 13.6 },
+    pins: [
+      { id: '+', label: '+', x: 0, y: 0 },
+      { id: '-', label: '−', x: 3 * P, y: 0 }
+    ]
+  },
+  // an RGB LED with a common cathode (the longest leg, second)
+  rgb: {
+    kind: 'rgb',
+    box: { x: -1.2, y: -9.4, w: 3 * P + 2.4, h: 10.4 },
+    pins: row(['R', '-', 'G', 'B'], ['R', '−', 'G', 'B'])
+  },
+  // a photoresistor: its resistance falls as light falls on it
+  ldr: {
+    kind: 'ldr',
+    box: { x: P - 3.2, y: -7.6, w: 6.4, h: 8.6 },
+    pins: [
+      { id: '1', label: '1', x: 0, y: 0 },
+      { id: '2', label: '2', x: 2 * P, y: 0 }
+    ]
+  },
+  // a battery with its two leads (their ends plug in like wires)
+  battery: {
+    kind: 'battery',
+    box: { x: P / 2 - 13.5, y: -52, w: 27, h: 53 },
+    pins: [
+      { id: '+', label: '+', x: 0, y: 0 },
+      { id: '-', label: '−', x: P, y: 0 }
+    ]
+  },
+  // a multimeter with its two probe leads: black COM, red V/A
+  meter: {
+    kind: 'meter',
+    box: { x: P - 17, y: -62, w: 34, h: 63 },
+    pins: [
+      { id: 'COM', label: 'COM', x: 0, y: 0 },
+      { id: 'V', label: 'V/A', x: 2 * P, y: 0 }
+    ]
+  },
+  // a one-digit 7-segment display (common cathode): two rows of five legs, 6 pitches apart
+  seg7: {
+    kind: 'seg7',
+    box: { x: -2.6, y: -6 * P - 1.8, w: 4 * P + 5.2, h: 6 * P + 3.6 },
+    pins: [
+      ...row(['g', 'f', 'COM.1', 'a', 'b'], ['g', 'f', '−', 'a', 'b']).map((p) => ({ ...p, y: -6 * P })),
+      ...row(['e', 'd', 'COM.2', 'c', 'dp'], ['e', 'd', '−', 'c', 'dp'])
+    ],
+    bus: [['COM.1', 'COM.2']]
+  },
+
+  // ------------------------------------------------------------ wave 2
+  // a small DC motor on two leads
+  motor: {
+    kind: 'motor',
+    box: { x: 1.5 * P - 11, y: -26, w: 22, h: 27 },
+    pins: [
+      { id: '1', label: '1', x: 0, y: 0 },
+      { id: '2', label: '2', x: 3 * P, y: 0 }
+    ]
+  },
+  // an NPN transistor (PN2222) in a TO-92 case: emitter, base, collector
+  npn: {
+    kind: 'npn',
+    box: { x: -1.6, y: -5.2, w: 2 * P + 3.2, h: 6.2 },
+    pins: row(['E', 'B', 'C'])
+  },
+  // a rectifier diode (1N4007): the band is the cathode
+  diode: {
+    kind: 'diode',
+    box: { x: -1, y: -1.6, w: 4 * P + 2, h: 3.2 },
+    pins: [
+      { id: 'A', label: 'A', x: 0, y: 0 },
+      { id: 'K', label: 'K', x: 4 * P, y: 0 }
+    ]
+  },
+  // a 16×2 character display with an I2C board: four pins
+  lcd: {
+    kind: 'lcd',
+    box: { x: 1.5 * P - 40, y: -38, w: 80, h: 39 },
+    pins: row(['GND', 'VCC', 'SDA', 'SCL'])
+  },
+  // a thumb joystick: two potentiometers and a push switch
+  joystick: {
+    kind: 'joystick',
+    box: { x: 2 * P - 13, y: -32, w: 26, h: 33 },
+    pins: row(['GND', '5V', 'VRx', 'VRy', 'SW'], ['GND', '+5V', 'VRx', 'VRy', 'SW'])
+  },
+  // a temperature sensor (TMP36): 0.5 V at 0 °C, 10 mV per degree
+  tmp36: {
+    kind: 'tmp36',
+    box: { x: -1.6, y: -5.2, w: 2 * P + 3.2, h: 6.2 },
+    pins: row(['VS', 'OUT', 'GND'], ['+Vs', 'Vout', 'GND'])
+  },
+
+  // ------------------------------------------------------------ wave 3 (they look toward −y)
+  hcsr04: {
+    kind: 'hcsr04',
+    // it stands on its pins, the two transducers looking forward (−y): seen from above it is a strip
+    box: { x: 1.5 * P - 23, y: -16.5, w: 46, h: 18 },
+    pins: row(['VCC', 'TRIG', 'ECHO', 'GND'], ['Vcc', 'Trig', 'Echo', 'Gnd'])
+  },
+  ir: {
+    kind: 'ir',
+    box: { x: P - 7.5, y: -32, w: 15, h: 33 },
+    pins: row(['VCC', 'GND', 'OUT'], ['VCC', 'GND', 'OUT'])
+  },
+  pir: {
+    kind: 'pir',
+    box: { x: P - 12.5, y: -25, w: 25, h: 26 },
+    pins: row(['VCC', 'OUT', 'GND'], ['VCC', 'OUT', 'GND'])
   }
+}
+
+/** Pins in a row one pitch apart, from x = 0 (labels: the ids, or their own). */
+function row(ids: string[], labels: string[] = ids): PinSpec[] {
+  return ids.map((id, i) => ({ id, label: labels[i], x: i * P, y: 0 }))
+}
+function row4(list: [string, string, number, number][]): PinSpec[] {
+  return list.map(([id, label, x, y]) => ({ id, label, x, y }))
+}
+
+/**
+ * Where a sensor looks from and which way, part-local: the ultrasonic, IR and motion sensors
+ * look toward −y from the middle of their front edge.
+ */
+export const SENSOR_EYE: Partial<Record<PartKind, { x: number; y: number }>> = {
+  hcsr04: { x: 1.5 * P, y: -13.6 },
+  ir: { x: P, y: -32 },
+  pir: { x: P, y: -13 }
 }
 
 /** Digital pins that can do PWM (analogWrite) on the Uno. */

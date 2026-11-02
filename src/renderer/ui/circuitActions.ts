@@ -1,10 +1,23 @@
 /** Circuit editing commands: every change is one undo step in the document. */
 import { batch } from '@preact/signals'
-import { type Circuit, type LedColor, type Part, type PartKind, type PinRef, type Rotation, WIRE_COLORS } from '../core/circuit/model'
-import { blinkCircuit, breadboardCircuit } from '../core/circuit/demo'
+import {
+  type Circuit,
+  type LedColor,
+  type MeterMode,
+  type Part,
+  type PartKind,
+  type PinRef,
+  type Room,
+  type RoomItem,
+  type RoomItemKind,
+  type Rotation,
+  WIRE_COLORS
+} from '../core/circuit/model'
+import { roomOf } from '../core/circuit/room'
+import { blinkCircuit, breadboardCircuit, motorButtonCircuit, nightLightCircuit, parkingCircuit } from '../core/circuit/demo'
 import { SPECS, rotatePoint } from '../core/circuit/parts'
 import { partsOnBoards } from '../core/circuit/nets'
-import { circuit, circuitSelection, circuitsMode } from '../core/circuit/state'
+import { circuit, circuitRoom, circuitSelection, circuitState, circuitsMode } from '../core/circuit/state'
 import { newId } from '../core/doc/model'
 import { commit, doc } from '../core/doc/store'
 import { roboticsMode } from '../core/robotics/state'
@@ -13,7 +26,7 @@ import { session, sketchPicking } from '../core/sketch/session'
 import { t } from '../i18n'
 import { leaveSketch, notify } from './actions'
 import { stopSim } from './sim'
-import { stopCircuit } from './circuitSim'
+import { setRunRoom, stopCircuit } from './circuitSim'
 
 export function commitCircuit(c: Circuit, sel?: string[]): void {
   commit({ ...doc.value, circuit: c })
@@ -58,6 +71,8 @@ export function addPart(kind: PartKind, x: number, y: number): string {
   const p: Part = { id: newId(), kind, x: snapMm(x), y: snapMm(y), rot: 0 }
   if (kind === 'resistor') p.ohms = 220
   if (kind === 'led') p.color = 'red'
+  if (kind === 'battery') p.volts = 9
+  if (kind === 'meter') p.mode = 'V'
   if (kind === 'pot') {
     p.ohms = 10_000
     p.knob = 0.5
@@ -75,6 +90,10 @@ export function updatePart(id: string, patch: Partial<Part>): void {
 }
 
 export const setOhms = (id: string, ohms: number) => updatePart(id, { ohms: Math.max(1, Math.min(10_000_000, ohms)) })
+export const setVolts = (id: string, volts: 9 | 3) => updatePart(id, { volts })
+export const setMeterMode = (id: string, mode: MeterMode) => updatePart(id, { mode })
+export const setBuzzerActive = (id: string, active: boolean) => updatePart(id, { active: active || undefined })
+export const setSwitchSide = (id: string, on: boolean) => updatePart(id, { on: on || undefined })
 export const setLedColor = (id: string, color: LedColor) => updatePart(id, { color })
 export const setKnob = (id: string, knob: number) => updatePart(id, { knob: Math.max(0, Math.min(1, knob)) })
 export const setArduinoProgram = (id: string, program: unknown) => {
@@ -117,7 +136,7 @@ export function rotateSelectedParts(dir: 1 | -1 = 1): void {
     if (!a || !b || a[0] !== b[0] || a[1] !== b[1] || !w.points.length) return w
     return { ...w, points: w.points.map(([x, y]) => swing(x, y, a)) }
   })
-  commitCircuit({ parts, wires })
+  commitCircuit({ ...c, parts, wires })
 }
 
 const round3 = (v: number) => Math.round(v * 1000) / 1000
@@ -130,7 +149,41 @@ export function deleteCircuitSelection(): void {
   const alive = new Set(parts.map((p) => p.id))
   // wires go with the parts they were attached to
   const wires = c.wires.filter((w) => !sel.has(w.id) && alive.has(w.a.part) && alive.has(w.b.part))
-  commitCircuit({ parts, wires }, [])
+  // things of the room go too
+  const room = c.room && c.room.items.some((it) => sel.has(it.id)) ? { ...c.room, items: c.room.items.filter((it) => !sel.has(it.id)) } : c.room
+  commitCircuit({ ...c, parts, wires, ...(room ? { room } : {}) }, [])
+}
+
+// ---------------------------------------------------------------- the room
+
+/** Put a thing of the room on the table (a lamp comes switched on). */
+export function addRoomItem(kind: RoomItemKind, x: number, y: number): string {
+  const c = circuit.value
+  const room = roomOf(c)
+  const it: RoomItem = { id: newId(), kind, x: snapMm(x), y: snapMm(y), ...(kind === 'lamp' ? { on: true } : {}) }
+  commitCircuit({ ...c, room: { ...room, items: [...room.items, it] } }, [it.id])
+  return it.id
+}
+
+/** The room's temperature (°C) or light (lux): in the project, or only in the run while it runs. */
+export function setRoomLevels(patch: Partial<Pick<Room, 'temp' | 'light'>>): void {
+  if (circuitState.peek() === 'running') {
+    const r = circuitRoom.peek()
+    if (r) setRunRoom({ ...r, ...patch })
+    return
+  }
+  const c = circuit.value
+  commitCircuit({ ...c, room: { ...roomOf(c), ...patch } })
+}
+
+/** Switch a lamp of the room on or off. */
+export function toggleLamp(id: string): void {
+  const running = circuitState.peek() === 'running'
+  const room = running ? circuitRoom.peek() : roomOf(circuit.value)
+  if (!room) return
+  const next = { ...room, items: room.items.map((it) => (it.id === id && it.kind === 'lamp' ? { ...it, on: !it.on } : it)) }
+  if (running) setRunRoom(next)
+  else commitCircuit({ ...circuit.value, room: next })
 }
 
 // ---------------------------------------------------------------- wires
@@ -175,6 +228,14 @@ export function loadBreadboardDemo(): void {
   if (circuit.value.parts.length && !window.confirm(t('ckt.replaceConfirm'))) return
   stopCircuit()
   commitCircuit(breadboardCircuit(), [])
+  circuitsMode.value = true
+}
+
+/** The 0.3 examples: a night light, a parking sensor, a button and a motor. */
+export function loadExample(which: 'night' | 'parking' | 'motor'): void {
+  if (circuit.value.parts.length && !window.confirm(t('ckt.replaceConfirm'))) return
+  stopCircuit()
+  commitCircuit(which === 'night' ? nightLightCircuit() : which === 'parking' ? parkingCircuit() : motorButtonCircuit(), [])
   circuitsMode.value = true
 }
 

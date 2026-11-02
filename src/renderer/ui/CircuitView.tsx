@@ -8,15 +8,31 @@
  */
 import { signal } from '@preact/signals'
 import { useEffect, useRef, useState } from 'preact/hooks'
-import type { Part, PartKind, PinRef } from '../core/circuit/model'
+import type { Part, PartKind, PinRef, Room, RoomItem, RoomItemKind, Rotation } from '../core/circuit/model'
 import { P, SPECS, formatOhms, partBounds, pinLabel, pinPos, refPos, rotatePoint } from '../core/circuit/parts'
 import { contacts, holeSnap, partsOnBoards } from '../core/circuit/nets'
-import { circuit, circuitBurnt, circuitKnobs, circuitResult, circuitSelection, circuitServos, circuitState } from '../core/circuit/state'
+import {
+  circuit,
+  circuitBurnt,
+  circuitJoy,
+  circuitKnobs,
+  circuitLive,
+  circuitPressed,
+  circuitResult,
+  circuitRoom,
+  circuitSelection,
+  circuitServos,
+  circuitState,
+  circuitSwitches
+} from '../core/circuit/state'
+import { ITEM_SIZE, roomOf } from '../core/circuit/room'
+import { RoomItemArt } from './circuitArt2'
 import { beginGesture, cancelGesture, doc, endGesture, inGesture, previewGesture } from '../core/doc/store'
 import { t } from '../i18n'
 import { PartArt } from './circuitArt'
-import { addPart, addWire, snapMm } from './circuitActions'
-import { setRunKnob } from './circuitSim'
+import { CircuitViewToggle } from './Circuit3D'
+import { addPart, addRoomItem, addWire, snapMm } from './circuitActions'
+import { flipSwitch, pressPart, setRunJoy, setRunKnob, setRunRoom } from './circuitSim'
 
 /** A wire being drawn: where it starts and the bends so far. */
 export const wiring = signal<{ from: PinRef; points: [number, number][] } | null>(null)
@@ -30,7 +46,15 @@ interface View {
   k: number
 }
 
-let api: { toWorld(cx: number, cy: number): [number, number] | null; center(): [number, number] } | null = null
+type DropApi = { toWorld(cx: number, cy: number): [number, number] | null; center(): [number, number] }
+let api: DropApi | null = null
+/** The 3D view takes parts and things dragged in from the panel too: it says where on the table they land. */
+export function setDropApi(a: DropApi): void {
+  api = a
+}
+export function dropDropApi(a: DropApi): void {
+  if (api === a) api = null
+}
 
 const partCenter = (kind: PartKind): [number, number] => {
   const b = SPECS[kind].box
@@ -83,6 +107,53 @@ type Drag =
   | { kind: 'pan'; x: number; y: number; ox: number; oy: number; click: boolean }
   | { kind: 'move'; ids: Set<string>; wx: number; wy: number; moved: boolean }
   | { kind: 'knob'; id: string; angle: number }
+  /** a button (or a joystick's switch) held down during the run */
+  | { kind: 'press'; id: string }
+  /** a joystick's stick pushed during the run (it springs back when let go) */
+  | { kind: 'joy'; id: string }
+  /** a thing of the room moved (while editing: an undo step; while running: only the run's room) */
+  | { kind: 'item'; id: string; wx: number; wy: number; room: Room; moved: boolean; running: boolean }
+
+/** A room thing being dragged in from the panel. */
+const ghostItem = signal<{ kind: RoomItemKind; x: number; y: number } | null>(null)
+
+/** Drag a new thing of the room from the panel onto the table (a click puts it in the middle). */
+export function beginItemDrag(kind: RoomItemKind, e: PointerEvent): void {
+  if (e.button !== 0) return
+  e.preventDefault()
+  const x0 = e.clientX
+  const y0 = e.clientY
+  let moved = false
+  const move = (ev: PointerEvent) => {
+    if (!moved && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 5) return
+    moved = true
+    document.body.classList.add('shape-dragging')
+    const w = api?.toWorld(ev.clientX, ev.clientY)
+    ghostItem.value = w ? { kind, x: snapMm(w[0]), y: snapMm(w[1]) } : null
+  }
+  const up = (ev: PointerEvent) => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    document.body.classList.remove('shape-dragging')
+    const g = ghostItem.peek()
+    ghostItem.value = null
+    if (!moved) {
+      const c = api?.center() ?? [40, -60]
+      addRoomItem(kind, c[0], c[1])
+    } else if (g && api?.toWorld(ev.clientX, ev.clientY)) addRoomItem(kind, g.x, g.y)
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+
+/** A point in a part's own frame (undoing its position and turn). */
+function toLocal(p: Part, w: [number, number]): [number, number] {
+  return rotatePoint(w[0] - p.x, w[1] - p.y, ((360 - p.rot) % 360) as Rotation)
+}
+
+/** the middle of a joystick's stick in its own frame, and how far it goes either way (mm) */
+const JOY_CENTER: [number, number] = [2 * P, -17]
+const JOY_TRAVEL = 5
 
 /** Where a potentiometer's knob is on the board (its turning centre), mm. */
 function knobCenter(p: Part): [number, number] {
@@ -141,18 +212,18 @@ export function CircuitView() {
     const el = host.current!
     const ro = new ResizeObserver(() => setSize({ w: el.clientWidth || 800, h: el.clientHeight || 600 }))
     ro.observe(el)
-    api = {
+    const mine: DropApi = (api = {
       toWorld,
       center: () => {
         const v = viewRef.current
         return [v.ox + el.clientWidth / v.k / 2, v.oy + el.clientHeight / v.k / 2]
       }
-    }
+    })
     // first view: everything on the board, or the empty board around the origin
     requestAnimationFrame(() => fit())
     return () => {
       ro.disconnect()
-      api = null
+      if (api === mine) api = null
       wiring.value = null
       gestureCircuit = null
       if (inGesture()) cancelGesture()
@@ -163,10 +234,18 @@ export function CircuitView() {
     const el = host.current
     if (!el) return
     const parts = circuit.peek().parts
+    const items = roomOf(circuit.peek()).items
     const w = el.clientWidth || 800
     const h = el.clientHeight || 600
-    if (!parts.length) return setView({ ox: -30, oy: -40, k: Math.min(w / 150, h / 110) })
-    const bs = parts.map(partBounds)
+    if (!parts.length && !items.length) return setView({ ox: -30, oy: -40, k: Math.min(w / 150, h / 110) })
+    // the parts and the things of the room on the table
+    const bs = [
+      ...parts.map(partBounds),
+      ...items.map((it) => {
+        const s = ITEM_SIZE[it.kind]
+        return { x0: it.x - s.hw, y0: it.y - s.hh, x1: it.x + s.hw, y1: it.y + s.hh }
+      })
+    ]
     const x0 = Math.min(...bs.map((b) => b.x0)) - 15
     const y0 = Math.min(...bs.map((b) => b.y0)) - 15
     const x1 = Math.max(...bs.map((b) => b.x1)) + 15
@@ -205,6 +284,7 @@ export function CircuitView() {
         return { pin: { part, pin } as PinRef }
       }
       if (d?.part) return { part: d.part }
+      if (d?.item) return { item: d.item }
       if (d?.wire) return { wire: d.wire }
       el = el.parentElement
     }
@@ -228,6 +308,37 @@ export function CircuitView() {
       drag.current = { kind: 'knob', id: pot.id, angle: pointerAngle(pot, w) }
       circuitSelection.value = [pot.id]
       return
+    }
+    if (running && e.button === 0 && w) {
+      // during a run: buttons are held, switches flipped, joysticks pushed, things of the room moved
+      const h = hit(e)
+      const part = h.part ? circuit.peek().parts.find((p) => p.id === h.part) : undefined
+      if (part?.kind === 'button') {
+        pressPart(part.id, true)
+        drag.current = { kind: 'press', id: part.id }
+        return
+      }
+      if (part?.kind === 'switch') {
+        flipSwitch(part.id)
+        drag.current = { kind: 'pan', x: e.clientX, y: e.clientY, ox: v.ox, oy: v.oy, click: false }
+        return
+      }
+      if (part?.kind === 'joystick') {
+        const [lx, ly] = toLocal(part, w)
+        if (Math.hypot(lx - JOY_CENTER[0], ly - JOY_CENTER[1]) <= 7.5) {
+          drag.current = { kind: 'joy', id: part.id }
+          moveStick(part, w)
+        } else {
+          // the board around the stick: its push switch
+          pressPart(part.id, true)
+          drag.current = { kind: 'press', id: part.id }
+        }
+        return
+      }
+      if (h.item) {
+        drag.current = { kind: 'item', id: h.item, wx: w[0], wy: w[1], room: circuitRoom.peek() ?? roomOf(circuit.peek()), moved: false, running: true }
+        return
+      }
     }
     if (e.button !== 0 || running || !w) {
       drag.current = { kind: 'pan', x: e.clientX, y: e.clientY, ox: v.ox, oy: v.oy, click: false }
@@ -263,6 +374,12 @@ export function CircuitView() {
       circuitSelection.value = e.shiftKey ? [...circuitSelection.peek(), h.wire] : [h.wire]
       return
     }
+    if (h.item) {
+      circuitSelection.value = [h.item]
+      beginGesture()
+      drag.current = { kind: 'item', id: h.item, wx: w[0], wy: w[1], room: roomOf(circuit.peek()), moved: false, running: false }
+      return
+    }
     drag.current = { kind: 'pan', x: e.clientX, y: e.clientY, ox: v.ox, oy: v.oy, click: true }
   }
 
@@ -276,6 +393,23 @@ export function CircuitView() {
         const r = host.current!.getBoundingClientRect()
         setHoverPin({ ref: h.pin, x: e.clientX - r.left, y: e.clientY - r.top })
       } else if (hoverPin) setHoverPin(null)
+      return
+    }
+    if (d.kind === 'joy') {
+      const p = circuit.peek().parts.find((x) => x.id === d.id)
+      if (p && w) moveStick(p, w)
+      return
+    }
+    if (d.kind === 'press') return
+    if (d.kind === 'item') {
+      if (!w) return
+      const dx = round(w[0] - d.wx)
+      const dy = round(w[1] - d.wy)
+      if (!d.moved && Math.hypot(dx, dy) < 0.8) return
+      d.moved = true
+      const room = { ...d.room, items: d.room.items.map((it) => (it.id === d.id ? { ...it, x: round(it.x + dx), y: round(it.y + dy) } : it)) }
+      if (d.running) setRunRoom(room)
+      else previewGesture({ ...doc.peek(), circuit: { ...(gestureCircuit ??= circuit.peek()), room } })
       return
     }
     if (d.kind === 'knob') {
@@ -317,7 +451,20 @@ export function CircuitView() {
     const wires = src.wires.map((wr) =>
       d.ids.has(wr.a.part) && d.ids.has(wr.b.part) ? { ...wr, points: wr.points.map(([x, y]) => [round(x + dx + sx), round(y + dy + sy)] as [number, number]) } : wr
     )
-    previewGesture({ ...cur, circuit: { parts, wires } })
+    previewGesture({ ...cur, circuit: { ...src, parts, wires } })
+  }
+
+  /** Push a joystick's stick toward the pointer (as far as it goes). */
+  const moveStick = (p: Part, w: [number, number]) => {
+    const [lx, ly] = toLocal(p, w)
+    let dx = lx - JOY_CENTER[0]
+    let dy = ly - JOY_CENTER[1]
+    const len = Math.hypot(dx, dy)
+    if (len > JOY_TRAVEL) {
+      dx *= JOY_TRAVEL / len
+      dy *= JOY_TRAVEL / len
+    }
+    setRunJoy(p.id, 0.5 + dx / (2 * JOY_TRAVEL), 0.5 + dy / (2 * JOY_TRAVEL))
   }
 
   const onUp = (e: PointerEvent) => {
@@ -330,7 +477,32 @@ export function CircuitView() {
     if (d.kind === 'move') {
       if (d.moved) endGesture()
       else cancelGesture()
+    } else if (d.kind === 'press') pressPart(d.id, false)
+    else if (d.kind === 'joy') setRunJoy(d.id, 0.5, 0.5)
+    else if (d.kind === 'item') {
+      // a click on a lamp switches it
+      const it = d.room.items.find((x) => x.id === d.id)
+      const flip = !d.moved && it?.kind === 'lamp'
+      const room = flip ? { ...d.room, items: d.room.items.map((x) => (x.id === d.id ? { ...x, on: !x.on } : x)) } : null
+      if (d.running) {
+        if (room) setRunRoom(room)
+      } else if (room) {
+        previewGesture({ ...doc.peek(), circuit: { ...circuit.peek(), room } })
+        endGesture()
+      } else if (d.moved) endGesture()
+      else cancelGesture()
     } else if (d.kind === 'pan' && d.click && !wiring.peek()) circuitSelection.value = []
+  }
+
+  /** the pointer is lost (another window, a touch cancelled): let go, take back an unfinished move */
+  const onLost = () => {
+    const d = drag.current
+    drag.current = null
+    gestureCircuit = null
+    if (!d) return
+    if (d.kind === 'press') pressPart(d.id, false)
+    else if (d.kind === 'joy') setRunJoy(d.id, 0.5, 0.5)
+    else if (d.kind === 'move' || (d.kind === 'item' && !d.running)) cancelGesture()
   }
 
   const v = view
@@ -346,6 +518,13 @@ export function CircuitView() {
   const knobs = circuitKnobs.value
   const servos = circuitServos.value
   const g = ghost.value
+  const gi = ghostItem.value
+  const live = circuitLive.value
+  const pressed = circuitPressed.value
+  const switches = circuitSwitches.value
+  const joys = circuitJoy.value
+  const room = running ? (circuitRoom.value ?? roomOf(c)) : roomOf(c)
+  const litOf = (id: string) => (pin: string) => (burnt.has(`${id}:${pin}`) ? 0 : (result?.leds.get(`${id}:${pin}`)?.brightness ?? 0))
 
   return (
     <div
@@ -356,6 +535,8 @@ export function CircuitView() {
       onPointerDown={(e) => onDown(e as unknown as PointerEvent)}
       onPointerMove={(e) => onMove(e as unknown as PointerEvent)}
       onPointerUp={(e) => onUp(e as unknown as PointerEvent)}
+      onPointerCancel={onLost}
+      onLostPointerCapture={onLost}
       onPointerLeave={() => (setCursor(null), setHoverPin(null))}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -364,6 +545,10 @@ export function CircuitView() {
           <pattern id="ckt-grid" width="2.54" height="2.54" patternUnits="userSpaceOnUse">
             <circle cx="0" cy="0" r="0.16" class="ckt-dot" />
           </pattern>
+          <radialGradient id="lamp-glow">
+            <stop offset="0" stop-color="#fff2a8" stop-opacity="0.55" />
+            <stop offset="1" stop-color="#fff2a8" stop-opacity="0" />
+          </radialGradient>
         </defs>
         <rect x={v.ox} y={v.oy} width={size.w / v.k} height={size.h / v.k} fill="url(#ckt-grid)" />
         {/* breadboards lie under everything, their holes can be wired to */}
@@ -372,6 +557,16 @@ export function CircuitView() {
             <PartArt part={p} />
           </g>
         ))}
+        {/* the things of the room lie on the table under the parts */}
+        {room.items.map((it: RoomItem) => {
+          const s = ITEM_SIZE[it.kind]
+          return (
+            <g transform={`translate(${it.x} ${it.y})`} data-item={it.id} class={`ckt-item${sel.has(it.id) ? ' sel' : ''}`} data-testid={`item-${it.kind}`}>
+              <RoomItemArt item={it} />
+              {sel.has(it.id) && <rect x={-s.hw - 2} y={-s.hh - 2} width={2 * s.hw + 4} height={2 * s.hh + 4} class="ckt-sel" />}
+            </g>
+          )
+        })}
         {boards.flatMap((p) =>
           SPECS.breadboard.pins.map((pin) => {
             const pos = pinPos(p, pin.id)!
@@ -394,7 +589,7 @@ export function CircuitView() {
           const led = result?.leds.get(p.id)
           const sv = servos[p.id]
           return (
-            <g transform={`translate(${p.x} ${p.y}) rotate(${p.rot})`} data-part={p.id} class={`ckt-part${sel.has(p.id) ? ' sel' : ''}${p.kind === 'pot' && running ? ' knob' : ''}`} data-testid={`part-${p.kind}`}>
+            <g transform={`translate(${p.x} ${p.y}) rotate(${p.rot})`} data-part={p.id} class={`ckt-part${sel.has(p.id) ? ' sel' : ''}${running && HANDLED.has(p.kind) ? ' knob' : ''}`} data-testid={`part-${p.kind}`}>
               <PartArt
                 part={p}
                 l13={result?.builtin.get(p.id) ?? 0}
@@ -404,6 +599,7 @@ export function CircuitView() {
                 knob={running ? knobs[p.id] : undefined}
                 angle={sv?.angle}
                 alarm={!!sv && sv.driven && !sv.powered}
+                show={{ live: live[p.id], lit: litOf(p.id), pressed: pressed.has(p.id), on: running ? switches[p.id] : undefined, joy: joys[p.id], running }}
               />
             </g>
           )
@@ -440,6 +636,11 @@ export function CircuitView() {
         {w && from && (
           <polyline points={wirePath([from, ...w.points, ...(cursor ? [cursor] : [])])} class="ckt-rubber" />
         )}
+        {gi && (
+          <g transform={`translate(${gi.x} ${gi.y})`} opacity="0.6" pointer-events="none">
+            <RoomItemArt item={{ id: 'ghost', kind: gi.kind, x: 0, y: 0 }} />
+          </g>
+        )}
         {g && (
           <g transform={`translate(${g.x} ${g.y})`} opacity="0.6" pointer-events="none">
             <PartArt part={{ id: 'ghost', kind: g.kind, x: 0, y: 0, rot: 0, ohms: g.kind === 'pot' ? 10_000 : 220, color: 'red', knob: 0.5 }} />
@@ -451,6 +652,7 @@ export function CircuitView() {
           {tip}
         </div>
       )}
+      <CircuitViewToggle />
       {c.parts.length === 0 && !g && <div class="empty-hint">{t('ckt.emptyHint')}</div>}
       {w && <div class="mode-hint">{t('ckt.wiringHint')}</div>}
     </div>
@@ -461,8 +663,18 @@ let gestureCircuit: import('../core/circuit/model').Circuit | null = null
 let fitRef: (() => void) | null = null
 /** Show the whole circuit. */
 export const fitCircuit = () => fitRef?.()
+/** The 3D view shows the whole circuit its own way while it is open. */
+export function setCircuitFit(fn: () => void): void {
+  fitRef = fn
+}
+/** The 3D view closes: its way of fitting goes too (unless the flat board has put its own already). */
+export function dropCircuitFit(fn: () => void): void {
+  if (fitRef === fn) fitRef = null
+}
 
 const round = (v: number) => Math.round(v * 1000) / 1000
+/** parts the mouse works during a run (the pointer shows it) */
+const HANDLED = new Set<PartKind>(['pot', 'button', 'switch', 'joystick'])
 
 function tooltip(parts: Part[], ref: PinRef, volts: number | undefined): string | null {
   const p = parts.find((x) => x.id === ref.part)

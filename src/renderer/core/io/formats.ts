@@ -100,6 +100,7 @@ export function parseDoc(text: string): Doc {
     if (!t || !isVec3(t.position) || !isVec3(t.rotation) || !isVec3(t.scale)) bad('transform')
     if (depth > 64) bad('too deep')
     if (n.mass !== undefined && !(isNum(n.mass) && n.mass > 0 && n.mass < 1e7)) bad('mass')
+    if (n.fixed !== undefined && n.fixed !== true) bad('fixed')
     if (n.material !== undefined && n.material !== 'glow' && n.material !== 'glass') bad('material')
     if (n.mirrorOf !== undefined) {
       const mo = n.mirrorOf
@@ -115,6 +116,7 @@ export function parseDoc(text: string): Doc {
       if (!n.params || typeof n.params !== 'object') bad('params')
       if (n.prim === 'mesh' && !(n.params.meshId && n.params.meshId in meshes)) bad('meshId')
       if (n.params.source !== undefined && (typeof n.params.source !== 'string' || n.params.source.length > 4096)) bad('source')
+      if (n.params.prop !== undefined && (n.prim !== 'mesh' || typeof n.params.prop !== 'string' || !ROBOT_ID.test(n.params.prop))) bad('prop')
       if (n.prim === 'sketch') {
         const s = validateSketch(n.params.sketch)
         if (!s) bad('sketch')
@@ -213,7 +215,10 @@ export function parseDoc(text: string): Doc {
         // the cheetah and the pigeon came with format 6; without a species it is the seal
         const species = np!.species
         if (species !== undefined && !SPECIES.includes(species)) bad('species')
-        n.params = { nerpa: { ...(program !== undefined ? { program } : {}), ...(species ? { species } : {}) } }
+        // a hero from a mod: its id (the mod may be missing here; it then looks like its species)
+        const model = np!.model
+        if (model !== undefined && (typeof model !== 'string' || !ROBOT_ID.test(model))) bad('hero model')
+        n.params = { nerpa: { ...(program !== undefined ? { program } : {}), ...(species ? { species } : {}), ...(model ? { model } : {}) } }
       }
     } else bad('kind')
   }

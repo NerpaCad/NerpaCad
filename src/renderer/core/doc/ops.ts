@@ -153,8 +153,9 @@ export function mirrorNodes(doc: Doc, ids: string[], axis: Axis | Vec3, center: 
 }
 
 /**
- * Align each node's box to the selection box along an axis. `boxes` are in the frame whose
- * world axis directions are `dirs` (the world by default, or the workplane).
+ * Align each node's box to the selection box (or to the box of the reference node `key`) along an
+ * axis. `boxes` are in the frame whose world axis directions are `dirs` (the world by default, or
+ * the workplane).
  */
 export function alignNodes(
   doc: Doc,
@@ -162,9 +163,10 @@ export function alignNodes(
   axis: Axis,
   mode: AlignMode,
   boxes: Record<string, Box>,
-  dirs: [Vec3, Vec3, Vec3] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+  dirs: [Vec3, Vec3, Vec3] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+  key: string | null = null
 ): Doc {
-  const all = unionBoxes(ids.map((id) => boxes[id]).filter(Boolean))
+  const all = key && boxes[key] ? boxes[key] : unionBoxes(ids.map((id) => boxes[id]).filter(Boolean))
   if (!all) return doc
   const target =
     mode === 'min' ? all.min[axis] : mode === 'max' ? all.max[axis] : boxCenter(all)[axis]

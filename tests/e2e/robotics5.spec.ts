@@ -161,7 +161,7 @@ test('the seal walks and talks, answers a click and a key; the block palette fol
   expect(l.x).toBeCloseTo(seal.transform.position[0])
   expect(l.bubble).toBe(false)
   // a lamp selected: the palette has Light; a robot: Sensors
-  await win.getByTestId('add-lamp-point').click()
+  await win.getByTestId('add-light').click()
   await win.waitForTimeout(500)
   await expect(win.locator('.blocklyToolboxCategory', { hasText: 'Свет' })).toBeVisible()
   await expect(win.locator('.blocklyToolboxCategory', { hasText: 'Внешность' })).toHaveCount(0)

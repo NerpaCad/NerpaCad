@@ -119,6 +119,16 @@ export interface RobotIO {
   servo?(pin: string, angle: number): void
   /** Arduino: a line to the serial monitor */
   serialPrint?(text: string): void
+  /** Arduino: a pin as an input (perhaps with its pull-up) or an output */
+  pinMode?(pin: string, mode: 'INPUT' | 'INPUT_PULLUP' | 'OUTPUT'): void
+  /** Arduino: a square wave of `freq` Hz on a pin (for `ms` milliseconds, or until noTone) */
+  tone?(pin: string, freq: number, ms?: number): void
+  noTone?(pin: string): void
+  /** Arduino: text on the I2C character display, at a row (0 or 1) from a column */
+  lcdPrint?(row: number, text: string, col?: number): void
+  lcdClear?(): void
+  /** Arduino: the ultrasonic sensor on these pins: the distance, cm (0: no echo) */
+  ultrasonic?(trig: string, echo: string): number
 }
 
 /** statements a thread may run in one tick before it has to give way */
@@ -529,6 +539,31 @@ export class Program {
       case 'ard_builtin_led':
         io.digitalWrite?.('D13', b.fields?.STATE !== 'OFF')
         return
+      case 'ard_pin_mode': {
+        const m = String(b.fields?.MODE ?? 'INPUT')
+        io.pinMode?.(String(b.fields?.PIN ?? 'D2'), m === 'OUTPUT' ? 'OUTPUT' : m === 'INPUT_PULLUP' ? 'INPUT_PULLUP' : 'INPUT')
+        return
+      }
+      case 'ard_tone':
+        io.tone?.(String(b.fields?.PIN ?? 'D8'), clamp(this.value(b, 'FREQ'), 31, 20000))
+        return
+      case 'ard_tone_for': {
+        const ms = clamp(this.value(b, 'MS'), 0, 600000)
+        io.tone?.(String(b.fields?.PIN ?? 'D8'), clamp(this.value(b, 'FREQ'), 31, 20000), ms)
+        return
+      }
+      case 'ard_no_tone':
+        io.noTone?.(String(b.fields?.PIN ?? 'D8'))
+        return
+      case 'ard_lcd_print': {
+        // as lcd.print does: a condition prints 1 or 0
+        const v = this.any(b, 'TEXT')
+        io.lcdPrint?.(num(b.fields?.ROW), typeof v === 'boolean' ? (v ? '1' : '0') : this.text(b, 'TEXT'), clamp(Math.round(this.value(b, 'COL')), 0, 15))
+        return
+      }
+      case 'ard_lcd_clear':
+        io.lcdClear?.()
+        return
       case 'ard_analog_write':
         io.analogWrite?.(String(b.fields?.PIN ?? 'D9'), Math.max(0, Math.min(255, Math.round(this.value(b, 'VALUE')))))
         return
@@ -637,6 +672,10 @@ export class Program {
       }
       case 'ard_digital_read':
         return this.io.digitalRead?.(String(f.PIN ?? 'D2')) ?? false
+      case 'ard_ultrasonic': {
+        const v = this.io.ultrasonic?.(String(f.TRIG ?? 'D9'), String(f.ECHO ?? 'D10')) ?? 0
+        return Number.isFinite(v) ? v : 0
+      }
       case 'robo_distance':
       case 'robo_light': {
         const v = this.io.sensor?.(num(f.PORT)) ?? NaN

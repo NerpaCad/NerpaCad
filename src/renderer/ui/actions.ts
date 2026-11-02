@@ -62,6 +62,7 @@ import {
   markSaved,
   placingRuler,
   placingWorkplane,
+  aligning,
   redo as storeRedo,
   selection,
   undo as storeUndo,
@@ -73,9 +74,9 @@ import {
   setDocView
 } from '../core/doc/store'
 import { cellCenter, demoDoc, islandDoc, lampNode, nerpaNode, robotNode, terrainNode, tileNode } from '../core/robotics/demo'
-import { DEFAULT_ROBOT, knownRobot, robotSpec } from '../core/robotics/robot'
+import { DEFAULT_ROBOT, knownRobot, localText, robotSpec } from '../core/robotics/robot'
 import { TILE_SIZE } from '../core/robotics/tiles'
-import { followId, prettyCap, recording, rememberActor, rememberRobot, roboticsMode, sensorKind, simState } from '../core/robotics/state'
+import { followId, prettyCap, recording, rememberActor, rememberRobot, roboticsMode, sensorKind, simActive, simState } from '../core/robotics/state'
 import { stopSim } from './sim'
 import { recoverOffer } from './autosave'
 import { leaveCircuits } from './circuitActions'
@@ -99,6 +100,8 @@ import {
 import { buildProfile } from '../core/sketch/profile'
 import { toDxf, toSvg } from '../core/sketch/export'
 import { skProblems } from '../view/sketchOverlay'
+import { propMesh } from '../view/modProps'
+import { heroSpec, propSpec } from '../core/robotics/mods'
 
 let vp: Viewport | null = null
 export function setViewport(v: Viewport | null): void {
@@ -345,8 +348,21 @@ export function ungroup(): void {
 export function align(axis: Axis, mode: AlignMode): void {
   const ids = selection.value
   if (ids.length < 2 || !vp) return
-  // align along the workplane axes (the world axes when the workplane is on the ground)
-  commit(alignNodes(doc.value, ids, axis, mode, vp.wpBoxes(ids), vp.wpAxes()))
+  // align along the workplane axes (the world axes when the workplane is on the ground), to the
+  // reference shape if the align tool has one
+  const key = aligning.peek()?.key ?? null
+  commit(alignNodes(doc.value, ids, axis, mode, vp.wpBoxes(ids), vp.wpAxes(), key && ids.includes(key) ? key : null))
+}
+
+/** Switch the align tool on or off (L); it needs two or more shapes selected. */
+export function toggleAlign(): void {
+  if (aligning.peek()) return exitAlign()
+  if (selection.peek().length < 2 || session.peek() || simActive.peek()) return
+  aligning.value = { key: null }
+}
+
+export function exitAlign(): void {
+  if (aligning.peek()) aligning.value = null
 }
 
 export function mirror(axis: Axis): void {
@@ -577,15 +593,29 @@ export function openProjectData(data: ArrayBuffer, path: string | null, name: st
     loadDoc(d, path, name)
     warnMissingRobots(d)
     setTimeout(() => vp?.fitView(), 300)
+    startScreen.value = false
+    // into the recent projects, with a picture once it is in view
+    if (path && name && !isLegacyFile(path)) {
+      void rememberRecent(path, name, false)
+      setTimeout(() => filePath.peek() === path && void rememberRecent(path, name, true), 1500)
+    }
   } catch (e) {
     notify(e instanceof FileFormatError ? t('file.badProject') : String(e), 'error')
   }
 }
 
-/** A project with robots of mods that are not installed here: say so (they are shown as NerpaBot). */
+/**
+ * A project with robots, heroes or pieces of mods that are not installed here: say so (robots
+ * are shown as NerpaBot, heroes as the hero they move like, pieces as plain shapes).
+ */
 export function warnMissingRobots(d: Doc): void {
   const missing = new Set<string>()
-  for (const n of [...d.nodes, ...d.parked]) if (n.kind === 'prim' && n.params.robot && !knownRobot(n.params.robot.model)) missing.add(n.params.robot.model)
+  for (const n of [...d.nodes, ...d.parked]) {
+    if (n.kind !== 'prim') continue
+    if (n.params.robot && !knownRobot(n.params.robot.model)) missing.add(n.params.robot.model)
+    if (n.params.nerpa?.model && !heroSpec(n.params.nerpa.model)) missing.add(n.params.nerpa.model)
+    if (n.params.prop && !propSpec(n.params.prop)) missing.add(n.params.prop)
+  }
   if (missing.size) notify(t('mods.missing', { ids: [...missing].join(', ') }), 'info')
 }
 
@@ -617,7 +647,58 @@ export async function saveProject(saveAs = false): Promise<boolean> {
   if (!r) return false
   markSaved(r.path, r.name)
   notify(t('file.saved', { name: r.name }))
+  void rememberRecent(r.path, r.name, true)
   return true
+}
+
+// ---------------------------------------------------------------- recent projects
+
+export interface RecentProject {
+  path: string
+  name: string
+  at: number
+  thumb?: string
+  missing: boolean
+}
+/** the projects opened and saved last, newest first */
+export const recentProjects = signal<RecentProject[]>([])
+/** the start screen (recent projects) is shown */
+export const startScreen = signal(false)
+
+export async function refreshRecent(): Promise<RecentProject[]> {
+  const list = (await window.api?.recentList?.().catch(() => null)) ?? []
+  recentProjects.value = list
+  return list
+}
+
+/** Put a project at the top of the recent ones (`picture`: with a picture of the view now). */
+async function rememberRecent(path: string, name: string, picture: boolean): Promise<void> {
+  const thumb = picture ? (vp?.thumbnail() ?? undefined) : undefined
+  await window.api?.recentAdd?.({ path, name, ...(thumb ? { thumb } : {}) }).catch(() => false)
+}
+
+export async function openRecent(path: string): Promise<void> {
+  if (!confirmDiscard()) return
+  const f = await guarded(() => window.api.recentOpen(path))
+  if (!f) {
+    notify(t('start.missing'), 'error')
+    await window.api.recentRemove(path).catch(() => false)
+    await refreshRecent()
+    return
+  }
+  openProjectData(f.data, f.path, f.name)
+}
+
+export async function forgetRecent(path: string): Promise<void> {
+  await window.api.recentRemove(path).catch(() => false)
+  await refreshRecent()
+}
+
+/** The start screen, when the app opened on an empty project and there are projects to go back to. */
+export async function showStartScreen(force = false): Promise<void> {
+  const list = await refreshRecent()
+  if (force || (list.length && !recoverOffer.peek() && !filePath.peek() && doc.peek().nodes.length === 0 && doc.peek().parked.length === 0))
+    startScreen.value = true
 }
 
 export async function importStlFile(): Promise<void> {
@@ -739,7 +820,7 @@ export function leaveRobotics(): void {
 /** Snap a point on the floor to the middle of the nearest 300 mm cell. */
 export const snapCell = (v: number) => Math.floor(v / TILE_SIZE) * TILE_SIZE + TILE_SIZE / 2
 
-const countOf = (prim: 'tile' | 'robot' | 'light' | 'nerpa' | 'terrain' | 'decor') => doc.value.nodes.filter((n) => n.kind === 'prim' && n.prim === prim).length
+const countOf = (prim: 'tile' | 'robot' | 'light' | 'nerpa' | 'terrain' | 'decor' | 'mesh') => doc.value.nodes.filter((n) => n.kind === 'prim' && n.prim === prim).length
 
 export function addTile(kind: TileKind, at?: [number, number], angle = 0): string {
   const x = at ? snapCell(at[0]) : freeCell()[0]
@@ -935,8 +1016,7 @@ export async function sendToSimulator(): Promise<void> {
   }
 }
 
-/** Shapes offered on the robotics field, and how much bigger than in the 3D tab (20 mm → 6 cm). */
-export const OBSTACLES: PrimType[] = ['box', 'cylinder', 'sphere', 'cone', 'pyramid', 'wedge']
+/** Shapes put on the robotics field by a script (the demos, the tests) are this much bigger than in the 3D tab (20 mm → 6 cm). */
 export const OBSTACLE_SCALE = 3
 
 /** A shape for the robotics field: an obstacle or a load for the robot to push. */
@@ -1009,6 +1089,46 @@ export function addNerpa(at?: [number, number], species: Species = 'seal'): stri
   const n = nerpaNode(x, y, 0, creatureName(species), undefined, species)
   commit(standOnTerrain(addNodes(doc.value, [n]), [n.id]), [n.id])
   rememberActor(n.id)
+  return n.id
+}
+
+/** A hero of a mod: its own look, moving like the built-in hero it names. */
+export function addHero(heroId: string, at?: [number, number]): string | null {
+  const h = heroSpec(heroId)
+  if (!h) return null
+  const [x, y] = at ?? emptyCell(doc.value.nodes)
+  const name = localText(h.name, lang.value) || h.id
+  const same = doc.value.nodes.filter((n) => n.kind === 'prim' && n.params.nerpa?.model === h.id).length
+  const n = nerpaNode(x, y, 0, same ? `${name} ${same + 1}` : name, undefined, h.like)
+  n.params = { nerpa: { ...n.params.nerpa, model: h.id } }
+  n.color = h.color
+  commit(standOnTerrain(addNodes(doc.value, [n]), [n.id]), [n.id])
+  rememberActor(n.id)
+  return n.id
+}
+
+/**
+ * A piece of a mod on the field (its model is loaded first): a shape whose triangles the project
+ * keeps, static unless the mod says it can be pushed. Relief goes onto the middle of a tile.
+ */
+export async function addProp(propId: string, at?: [number, number]): Promise<string | null> {
+  const q = propSpec(propId)
+  if (!q) return null
+  const mesh = await propMesh(propId)
+  if (!mesh || doc.value.scene !== 'robo') {
+    if (!mesh) notify(t('mods.pieceBroken', { id: propId }), 'error')
+    return null
+  }
+  const d = doc.value
+  let [x, y] = at ?? emptyCell(d.nodes)
+  if (q.section === 'relief') [x, y] = snapTerrain(x, y, 0, 1)
+  const meshId = `mod-${q.id}`
+  const name = localText(q.name, lang.value) || q.id
+  const same = d.nodes.filter((o) => o.kind === 'prim' && o.params.prop === q.id).length
+  const n = createShape('mesh', same ? `${name} ${same + 1}` : name, [x, y, 0], { params: { meshId, prop: q.id } })
+  if (q.static) n.fixed = true
+  else if (q.mass) n.mass = q.mass
+  commit(standOnTerrain(addNodes({ ...d, meshes: { ...d.meshes, [meshId]: mesh } }, [n]), [n.id]), [n.id])
   return n.id
 }
 
@@ -1104,6 +1224,20 @@ export function setMass(ids: string[], mass: number | undefined): void {
       return mass === undefined ? (rest as typeof n) : { ...n, mass }
     })
   )
+}
+
+/**
+ * Make shapes of the field static (they do not move; robots and heroes go over them like over
+ * terrain) or movable again. Whatever stands on the field is put on them / back on the ground.
+ */
+export function setFixed(ids: string[], on: boolean): void {
+  const next = updateNodes(doc.value, ids, (n) => {
+    if (!!n.fixed === on) return n
+    const { fixed: _old, ...rest } = n
+    void _old
+    return on ? { ...n, fixed: true as const } : (rest as typeof n)
+  })
+  if (next !== doc.value) commit(next)
 }
 
 /** Replace the field with the demo: a loop track, a line-following robot and a few shapes. */

@@ -13,6 +13,7 @@ import { type Key, lang, t } from '../i18n'
 import { themeId } from '../themes'
 import * as A from './actions'
 import { Blockly, EMPTY_PROGRAM, blocklyTheme, defineBlocks, toolboxFor } from './blocks'
+import { programToPython } from '../core/robotics/pycode'
 
 const SAVE_DELAY = 300
 
@@ -28,8 +29,8 @@ export interface ProgramSource {
   toolbox(kind?: string): Blockly.utils.toolbox.ToolboxDefinition
   /** shown when there is no target */
   empty: Key
-  /** the program as code (adds a "Code" tab) */
-  code?: (program: unknown) => string
+  /** the program as code (adds a "Code" tab); `kind` and `name` are the target's */
+  code?: (program: unknown, kind?: string, name?: string) => string
   /** lines printed by the program (adds a "Serial monitor" tab) */
   serial?: ReadonlySignal<string[]>
 }
@@ -46,7 +47,9 @@ export const robotProgram: ProgramSource = {
   active: activeBlocks,
   locked: simActive,
   toolbox: (kind) => toolboxFor((kind as Parameters<typeof toolboxFor>[0] | undefined) ?? 'robot'),
-  empty: 'robo.addActorFirst'
+  empty: 'robo.addActorFirst',
+  code: (p, kind, name) =>
+    programToPython(p, kind?.startsWith('nerpa') ? 'hero' : kind === 'light' ? 'lamp' : 'robot', t('robo.codeHeader', { name: name ?? '' }))
 }
 
 // variable names: Blockly asks with window.prompt, which Electron does not have
@@ -149,7 +152,7 @@ export function BlocklyPanel({ source = robotProgram }: { source?: ProgramSource
       {!robot ? (
         <div class="blockly-empty">{t(source.empty)}</div>
       ) : view === 'code' && source.code ? (
-        <CodeView code={source.code(robot.program)} />
+        <CodeView code={source.code(robot.program, robot.kind, robot.name)} />
       ) : view === 'serial' && source.serial ? (
         <SerialView lines={source.serial.value} />
       ) : (

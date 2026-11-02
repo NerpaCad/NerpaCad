@@ -70,13 +70,22 @@ describe('mod.json', () => {
     expect(newer.mod).toBeNull()
     expect(newer.errors[0]).toMatch(/newer/)
     expect(parseMod(mod((j) => (j.id = 'a b')), base).mod).toBeNull()
-    expect(parseMod(mod((j) => (j.robots = [])), base).mod).toBeNull()
+    const empty = parseMod(
+      mod((j) => {
+        j.robots = []
+        j.heroes = []
+        j.props = []
+      }),
+      base
+    )
+    expect(empty.mod).toBeNull()
+    expect(empty.errors[0]).toMatch(/no "robots", "heroes" or "props"/)
   })
 
   it('model files only inside the mod folder; no scripts, no other places', () => {
     for (const file of ['../x.glb', '/etc/x.glb', 'C:\\x.glb', 'http://evil/x.glb', 'mod://m1/x.glb', 'x.js', 'x.html', 'sub\\x.fbx']) {
       const r = parseMod(mod((j) => (j.robots[0].model.file = file)), base)
-      expect(r.mod, file).toBeNull()
+      expect(r.mod?.robots ?? [], file).toEqual([])
     }
     // a sub-folder is fine
     expect(parseMod(mod((j) => (j.robots[0].model.file = 'models/bot v2.glb')), base).mod!.robots[0].model!.url).toBe('mod://m0/models/bot%20v2.glb')
@@ -87,7 +96,7 @@ describe('mod.json', () => {
     expect(r.mod!.robots[0].maxSpeed).toBe(2000)
     expect(r.errors[0]).toMatch(/maxSpeed/)
     const noTrack = parseMod(mod((j) => delete j.robots[0].track), base)
-    expect(noTrack.mod).toBeNull()
+    expect(noTrack.mod!.robots).toEqual([])
     expect(noTrack.errors.join()).toMatch(/track: a number is needed/)
     // a pad port used twice: that pad is left out
     const twice = parseMod(mod((j) => (j.robots[0].pads[1].port = 1)), base)
@@ -95,9 +104,9 @@ describe('mod.json', () => {
   })
 
   it('axes: three different ones, not mirrored; colours and patterns are checked', () => {
-    expect(parseMod(mod((j) => (j.robots[0].model.left = '+z')), base).mod).toBeNull()
+    expect(parseMod(mod((j) => (j.robots[0].model.left = '+z')), base).mod!.robots).toEqual([])
     const mirrored = parseMod(mod((j) => (j.robots[0].model.left = '-x')), base)
-    expect(mirrored.mod).toBeNull()
+    expect(mirrored.mod!.robots).toEqual([])
     expect(mirrored.errors[0]).toMatch(/mirror/)
     const colours = parseMod(
       mod((j) => (j.robots[0].model.colors = [{ match: '(', color: '#ff0000' }, { match: 'x', color: 'red' }, { match: 'ok', color: '#00ff00', opacity: 7 }])),
@@ -109,7 +118,7 @@ describe('mod.json', () => {
 
   it('robot ids already taken (NerpaBot, another mod) are refused; ports of mods show in the blocks', () => {
     const r = parseMod(mod((j) => (j.robots[0].id = 'nerpabot')), base, new Set(Object.keys(ROBOTS)))
-    expect(r.mod).toBeNull()
+    expect(r.mod!.robots).toEqual([])
     expect(r.errors[0]).toMatch(/already taken/)
     const big = parseMod(mod((j) => j.robots[0].pads.push({ port: 9, x: 0, y: 0, z: 20 })), base).mod!.robots[0]
     big.id = 'big-test'
@@ -122,5 +131,77 @@ describe('mod.json', () => {
     const r = parseMod(readFileSync('tests/fixtures/mods/broken/mod.json', 'utf8'), base)
     expect(r.mod).toBeNull()
     expect(r.errors.join()).toMatch(/file/)
+  })
+})
+
+describe('heroes and field pieces of mods', () => {
+  it('the fixture brings a hero moving like the seal and two pieces: a static relief block and a movable crate', () => {
+    const m = parseMod(fixture, base).mod!
+    expect(m.heroes).toEqual([
+      expect.objectContaining({ id: 'testpet', mod: 'testbot', like: 'seal', tint: '^body$', color: '#ff7f50', clips: {} })
+    ])
+    expect(m.heroes[0].model.url).toBe('mod://m0/testbot.gltf')
+    expect(m.props.map((q) => [q.id, q.section, q.static, q.mass])).toEqual([
+      ['teststep', 'relief', true, undefined],
+      ['testcrate', 'decor', false, 50]
+    ])
+  })
+
+  it('a mod of pieces only is a mod; wrong heroes and pieces are left out with a reason', () => {
+    const only = parseMod(
+      mod((j) => {
+        j.robots = []
+        j.heroes = []
+      }),
+      base
+    )
+    expect(only.mod!.props.length).toBe(2)
+    const bad = parseMod(
+      mod((j) => {
+        j.heroes[0].like = 'dragon'
+        j.props[0].section = 'sky'
+        j.props[1].model.file = '../x.glb'
+        j.heroes.push({ id: 'h2', like: 'pigeon', model: { file: 'testbot.gltf' }, clips: { dance: 'x', fly: '(' } })
+      }),
+      base
+    )
+    expect(bad.mod!.heroes.map((h) => h.id)).toEqual(['h2'])
+    expect(bad.mod!.props).toEqual([])
+    const why = bad.errors.join('\n')
+    expect(why).toMatch(/heroes\[0\]\.like/)
+    expect(why).toMatch(/props\[0\]\.section/)
+    expect(why).toMatch(/props\[1\]\.model\.file/)
+    expect(why).toMatch(/unknown motion "dance"/)
+    expect(why).toMatch(/clips\.fly/)
+  })
+
+  it('ids are unique across robots, heroes, pieces and the built-in heroes', () => {
+    const r = parseMod(
+      mod((j) => {
+        j.heroes[0].id = 'cheetah'
+        j.props[1].id = 'teststep'
+      }),
+      base
+    )
+    expect(r.mod!.heroes).toEqual([])
+    expect(r.mod!.props.map((q) => q.id)).toEqual(['teststep'])
+    expect(r.errors.filter((e) => /already taken/.test(e)).length).toBe(2)
+  })
+
+  it('a project keeps a hero and a piece of a mod that is not installed; the hero moves like its own kind', () => {
+    const d = {
+      ...emptyDoc(),
+      scene: 'robo' as const,
+      meshes: { 'mod-x': { vertices: [0, 0, 0, 10, 0, 0, 0, 10, 0, 0, 0, 10], triangles: [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3] } },
+      nodes: [
+        { ...robotNode(0, 0, 0, 'r'), id: 'h', prim: 'nerpa' as const, params: { nerpa: { species: 'cheetah' as const, model: 'gone-hero' } } },
+        { ...robotNode(0, 0, 0, 'p'), id: 'p', prim: 'mesh' as const, fixed: true as const, params: { meshId: 'mod-x', prop: 'gone-piece' } }
+      ]
+    }
+    const back = parseDoc(serializeDoc(d))
+    const all = [...back.nodes, ...back.parked] as any[]
+    expect(all.find((n) => n.id === 'h').params.nerpa).toMatchObject({ species: 'cheetah', model: 'gone-hero' })
+    expect(all.find((n) => n.id === 'p').params.prop).toBe('gone-piece')
+    expect(() => parseDoc(serializeDoc({ ...d, nodes: [{ ...d.nodes[1], params: { meshId: 'mod-x', prop: '../x' } }] }))).toThrow()
   })
 })

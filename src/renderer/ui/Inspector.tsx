@@ -3,6 +3,7 @@ import { LAND_COLOR, LAND_KINDS, TERRAIN_MAX_HEIGHT, TERRAIN_MIN_HEIGHT, isLand,
 import { drawLand } from '../view/landVisuals'
 import { speciesOf } from '../core/robotics/creatures'
 import { standOnTerrain } from '../core/robotics/field'
+import { propSpec } from '../core/robotics/mods'
 import { terrainOf } from '../core/robotics/world'
 import type { TerrainParams, TileKind } from '../core/doc/model'
 import { cleanNum, isRoboNode, MATERIALS } from '../core/doc/model'
@@ -43,6 +44,7 @@ export function Inspector() {
   const models = nodes.filter((n) => !isRoboNode(n))
   const looks = new Set(nodes.filter((n) => !n.isHole).map((n) => n.material ?? 'normal'))
   const material = looks.size === 1 ? [...looks][0] : null
+  const modLook = nodes.every((n) => n.kind === 'prim' && !!propSpec(n.params.prop))
 
   return (
     <div class="inspector" data-testid="inspector" onPointerDown={(e) => e.stopPropagation()}>
@@ -70,6 +72,9 @@ export function Inspector() {
       {robo ? (
         <RoboFields nodes={nodes} />
       ) : (
+      <>
+      {/* a piece of a mod is shown with the mod's own colours: nothing to paint */}
+      {!modLook && (
       <>
       <div class="solid-hole">
         <button
@@ -130,6 +135,8 @@ export function Inspector() {
         </div>
       )}
 
+      </>
+      )}
       {single && (
         <TransformFields
           key={single.id}
@@ -333,6 +340,8 @@ function RoboFields({ nodes }: { nodes: DocNode[] }) {
   const lamp = single.kind === 'prim' && single.prim === 'light' && single.params.light ? single : null
   const seal = single.kind === 'prim' && single.prim === 'nerpa' ? single : null
   const piece = single.kind === 'prim' && single.prim === 'terrain' && single.params.terrain ? single : null
+  // a platform, ramp or bridge can have any colour (landscape tiles are coloured by what they are)
+  const relief = piece && !isLand(piece.params.terrain!.kind) ? piece : null
   const tile = single.kind === 'prim' && single.prim === 'tile' ? single : null
   const decor = single.kind === 'prim' && single.prim === 'decor'
   const turns = !!robot || !!seal || decor || lamp?.params.light?.kind === 'spot'
@@ -364,7 +373,7 @@ function RoboFields({ nodes }: { nodes: DocNode[] }) {
           />
         )}
       </div>
-      {(lamp || seal) && (
+      {(lamp || seal || relief) && (
         <div class="palette" data-testid="robo-palette">
           {PALETTE.map((c) => (
             <button class={`pal ${c === single.color ? 'on' : ''}`} style={{ background: c }} title={c} onClick={() => A.setSelectedColor(c)} />
@@ -498,8 +507,24 @@ function MassField({ nodes }: { nodes: DocNode[] }) {
   const res = single ? geom.peek(single) : null
   const auto = single && res ? massOf({ ...single, mass: undefined }, res.volume) : null
   const value = single?.mass ?? auto
+  // models brought from the 3D tab can be made static: part of the field, not a thing to push
+  const meshes = nodes.every((n) => n.kind === 'prim' && n.prim === 'mesh')
+  const fixed = meshes && nodes.every((n) => n.fixed)
+  const staticRow = meshes && (
+    <label class="check-row" title={t('robo.staticTip')}>
+      <input
+        type="checkbox"
+        checked={fixed}
+        onChange={(e) => A.setFixed(nodes.map((n) => n.id), (e.currentTarget as HTMLInputElement).checked)}
+        data-testid="shape-static"
+      />
+      {t('robo.static')}
+    </label>
+  )
+  if (fixed) return <div class="fields">{staticRow}</div>
   return (
     <div class="fields">
+      {staticRow}
       <div class="field-row-title">{t('robo.mass')}</div>
       <div class="field-row two">
         {single ? (

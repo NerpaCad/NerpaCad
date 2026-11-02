@@ -30,7 +30,8 @@ test('box select, align, mirror, duplicate, delete, keyboard', async () => {
 
   // align all to the minimum X
   await win.click('[data-testid=tb-align]')
-  await win.click('[data-testid=align-0-min]')
+  const dot = await win.evaluate(() => (window as any).__cad.viewport.alignDotScreen(0, 'min'))
+  await win.mouse.click(dot.x, dot.y)
   await win.keyboard.press('Escape')
   ns = await nodes(win)
   const boxes = await win.evaluate(() => {

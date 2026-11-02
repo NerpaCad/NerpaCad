@@ -21,7 +21,7 @@ test('after Stop the seal stands in its rest pose again (no frozen stride)', asy
     v.scene.traverse((o: any) => { if (o.name === 'seal-visual') g = o })
     g.updateWorldMatrix(true, true)
     const out: number[] = []
-    g.traverse((o: any) => { if (o.isSkinnedMesh) { const t = new V(); for (let i = 0; i < o.geometry.attributes.position.count; i += 37) { o.getVertexPosition(i, t); out.push(+t.x.toFixed(2), +t.z.toFixed(2)) } } })
+    g.traverse((o: any) => { if (o.isSkinnedMesh) { const t = new V(); for (let i = 0; i < o.geometry.attributes.position.count; i += 37) { o.getVertexPosition(i, t); out.push(+t.x.toFixed(5), +t.z.toFixed(5)) } } })
     return out
   })
   const before = await pose()
@@ -32,7 +32,9 @@ test('after Stop the seal stands in its rest pose again (no frozen stride)', asy
   await win.waitForTimeout(600)
   const after = await pose()
   const diff = (a: number[], b: number[]) => Math.max(...a.map((x, i) => Math.abs(x - b[i])))
-  expect(diff(before, during)).toBeGreaterThan(0.5)
-  expect(diff(before, after)).toBeLessThan(0.01)
+  // in the model's own units: compared with its size
+  const size = Math.max(...before) - Math.min(...before)
+  expect(diff(before, during)).toBeGreaterThan(0.03 * size)
+  expect(diff(before, after)).toBeLessThan(0.001 * size)
   await app.close()
 })

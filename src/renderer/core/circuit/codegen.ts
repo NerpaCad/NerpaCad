@@ -14,6 +14,12 @@ interface Ctx {
   /** pins with a servo on them */
   servos: Set<string>
   serial: boolean
+  /** the I2C character display is used */
+  lcd: boolean
+  /** ultrasonic sensors: their Trig and Echo pins */
+  sonars: Map<string, [string, string]>
+  /** pins the program sets up itself (pinMode blocks): no automatic OUTPUT for them */
+  ownModes: Set<string>
   /** variables: block id → C++ name and whether it holds text */
   vars: Map<string, { name: string; c: string; text: boolean }>
 }
@@ -21,7 +27,18 @@ interface Ctx {
 const IND = '  '
 
 export function arduinoCode(program: unknown, comments: { setup: string; loop: string; wait: string; unsupported: string } = DEFAULT_COMMENTS): string {
-  const ctx: Ctx = { pins: new Set(), loopVar: 0, timer: false, unknown: new Set(), servos: new Set(), serial: false, vars: variables(program) }
+  const ctx: Ctx = {
+    pins: new Set(),
+    loopVar: 0,
+    timer: false,
+    unknown: new Set(),
+    servos: new Set(),
+    serial: false,
+    lcd: false,
+    sonars: new Map(),
+    ownModes: new Set(),
+    vars: variables(program)
+  }
   const start = topBlocks(program).find((b) => b.type === 'robo_start')
   const setup: string[] = []
   let loop: string[] = []
@@ -33,21 +50,48 @@ export function arduinoCode(program: unknown, comments: { setup: string; loop: s
     }
     setup.push(...stmt(b, 1, ctx, comments))
   }
+  // a sketch has one setup(): other "when started" scripts are not carried over
+  const more = topBlocks(program).filter((x) => x.type === 'robo_start' && x !== start).length
+  if (more) setup.push(`${IND}// ${comments.unsupported}: robo_start ×${more}`)
   const servoPins = [...ctx.servos].sort(byPin)
   // a pin driving a servo is set up by attach(), not pinMode()
-  const pinModes = [...ctx.pins].filter((p) => !ctx.servos.has(p)).sort(byPin).map((p) => `${IND}pinMode(${p}, OUTPUT);`)
+  const pinModes = [...ctx.pins]
+    .filter((p) => !ctx.servos.has(p) && !ctx.ownModes.has(p))
+    .sort(byPin)
+    .map((p) => `${IND}pinMode(${p}, OUTPUT);`)
+  const sonars = [...ctx.sonars.values()]
+  for (const [trig, echo] of sonars) pinModes.push(`${IND}pinMode(${trig}, OUTPUT);`, `${IND}pinMode(${echo}, INPUT);`)
   const lines: string[] = []
-  if (servoPins.length) lines.push('#include <Servo.h>', '')
+  if (servoPins.length) lines.push('#include <Servo.h>')
+  if (ctx.lcd) lines.push('#include <Wire.h>', '#include <LiquidCrystal_I2C.h>')
+  if (servoPins.length || ctx.lcd) lines.push('')
   for (const p of servoPins) lines.push(`Servo servo${p};`)
+  if (ctx.lcd) lines.push('LiquidCrystal_I2C lcd(0x27, 16, 2);')
   if (ctx.timer) lines.push('unsigned long startTime;')
   for (const v of ctx.vars.values()) lines.push(`${v.text ? 'String' : 'long'} ${v.c}${v.text ? '' : ' = 0'};${v.c !== v.name ? ` // ${v.name}` : ''}`)
-  if (servoPins.length || ctx.timer || ctx.vars.size) lines.push('')
+  if (servoPins.length || ctx.timer || ctx.vars.size || ctx.lcd) lines.push('')
+  if (sonars.length) {
+    // the ultrasonic sensor: a 10 µs pulse on Trig, then how long Echo stays high (sound: ~58 µs per cm there and back)
+    lines.push(
+      'long distanceCm(int trig, int echo)',
+      '{',
+      `${IND}digitalWrite(trig, LOW);`,
+      `${IND}delayMicroseconds(2);`,
+      `${IND}digitalWrite(trig, HIGH);`,
+      `${IND}delayMicroseconds(10);`,
+      `${IND}digitalWrite(trig, LOW);`,
+      `${IND}return pulseIn(echo, HIGH, 30000) / 58;`,
+      '}',
+      ''
+    )
+  }
   lines.push('void setup()', '{')
   if (ctx.serial) lines.push(`${IND}Serial.begin(9600);`)
+  if (ctx.lcd) lines.push(`${IND}lcd.init();`, `${IND}lcd.backlight();`)
   lines.push(...pinModes)
   for (const p of servoPins) lines.push(`${IND}servo${p}.attach(${p});`)
   if (ctx.timer) lines.push(`${IND}startTime = millis();`)
-  if ((pinModes.length || servoPins.length || ctx.serial || ctx.timer) && setup.length) lines.push('')
+  if ((pinModes.length || servoPins.length || ctx.serial || ctx.timer || ctx.lcd) && setup.length) lines.push('')
   lines.push(...setup)
   lines.push('}', '', 'void loop()', '{')
   lines.push(...(loop.length ? loop : [`${IND}// ${comments.loop}`]))
@@ -92,6 +136,24 @@ function stmt(b: BlockJson, depth: number, ctx: Ctx, c: typeof DEFAULT_COMMENTS)
     case 'ard_serial_println':
       ctx.serial = true
       return [`${ind}Serial.println(${textExpr(b, 'TEXT', ctx)});`]
+    case 'ard_pin_mode': {
+      const pin = pinNumber(String(f.PIN ?? 'D2'))
+      ctx.ownModes.add(pin)
+      const mode = f.MODE === 'OUTPUT' ? 'OUTPUT' : f.MODE === 'INPUT_PULLUP' ? 'INPUT_PULLUP' : 'INPUT'
+      return [`${ind}pinMode(${pin}, ${mode});`]
+    }
+    case 'ard_tone':
+      return [`${ind}tone(${pinNumber(String(f.PIN ?? 'D8'))}, ${expr(b, 'FREQ', ctx)});`]
+    case 'ard_tone_for':
+      return [`${ind}tone(${pinNumber(String(f.PIN ?? 'D8'))}, ${expr(b, 'FREQ', ctx)}, ${expr(b, 'MS', ctx)});`]
+    case 'ard_no_tone':
+      return [`${ind}noTone(${pinNumber(String(f.PIN ?? 'D8'))});`]
+    case 'ard_lcd_print':
+      ctx.lcd = true
+      return [`${ind}lcd.setCursor(${expr(b, 'COL', ctx)}, ${f.ROW === '1' ? 1 : 0});`, `${ind}lcd.print(${textExpr(b, 'TEXT', ctx)});`]
+    case 'ard_lcd_clear':
+      ctx.lcd = true
+      return [`${ind}lcd.clear();`]
     case 'variables_set': {
       const v = ctx.vars.get(varOf(b))
       if (!v) return []
@@ -167,6 +229,12 @@ function value(b: BlockJson, ctx: Ctx, want: 'num' | 'any' = 'num'): string {
       return `analogRead(${ANALOG_PINS.includes(String(f.PIN)) ? f.PIN : 'A0'})`
     case 'ard_digital_read':
       return `(digitalRead(${pinNumber(String(f.PIN ?? 'D2'))}) == HIGH)`
+    case 'ard_ultrasonic': {
+      const trig = pinNumber(String(f.TRIG ?? 'D9'))
+      const echo = pinNumber(String(f.ECHO ?? 'D10'))
+      ctx.sonars.set(`${trig}/${echo}`, [trig, echo])
+      return `distanceCm(${trig}, ${echo})`
+    }
     case 'variables_get': {
       const v = ctx.vars.get(varOf(b))
       if (!v) return '0'
@@ -229,7 +297,7 @@ const RESERVED = new Set(
     'delay delaymicroseconds millis micros map random randomseed min max abs constrain round sq sqrt pow sin cos tan log exp ' +
     'tone notone pulsein pulseinlong shiftin shiftout pinmode digitalread digitalwrite analogread analogwrite analogreference ' +
     'attachinterrupt detachinterrupt interrupts nointerrupts bit bitread bitwrite bitset bitclear lowbyte highbyte ' +
-    'pi half_pi two_pi deg_to_rad rad_to_deg a0 a1 a2 a3 a4 a5 starttime'
+    'pi half_pi two_pi deg_to_rad rad_to_deg a0 a1 a2 a3 a4 a5 starttime lcd wire distancecm'
   ).split(' ')
 )
 

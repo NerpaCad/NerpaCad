@@ -1,17 +1,18 @@
 /**
  * What a hero stands on (and what is in front of it): the heroes "know" the ground under their
  * feet — grass, sand, stone, road, water, the bare floor, a platform, a ramp, a bridge, a track
- * tile, a rock, a tree or a bush (a bird perching) — or that they are in the air. The robot has
- * no such sense: it only has its sensors (its line sensor tells the surfaces apart by brightness).
+ * tile, a rock, a tree or a bush (a bird perching), a static shape (an object) — or that they are
+ * in the air. The robot has no such sense: it only has its sensors (its line sensor tells the
+ * surfaces apart by brightness).
  */
 import { type PlacedTerrain, STEP, nearestSurface, supportHit, surfacesAt } from './terrain'
 import { type PlacedTile, tileSurface } from './sensors'
 import { TILE_SIZE } from './tiles'
 
-export type SurfaceKind = 'grass' | 'sand' | 'stone' | 'road' | 'water' | 'floor' | 'platform' | 'ramp' | 'bridge' | 'track' | 'rock' | 'tree' | 'bush' | 'air'
+export type SurfaceKind = 'grass' | 'sand' | 'stone' | 'road' | 'water' | 'floor' | 'platform' | 'ramp' | 'bridge' | 'track' | 'rock' | 'tree' | 'bush' | 'object' | 'air'
 
 /** in the order the block menus show them */
-export const SURFACE_KINDS: SurfaceKind[] = ['grass', 'sand', 'stone', 'road', 'water', 'floor', 'platform', 'ramp', 'bridge', 'track', 'rock', 'tree', 'bush', 'air']
+export const SURFACE_KINDS: SurfaceKind[] = ['grass', 'sand', 'stone', 'road', 'water', 'floor', 'platform', 'ramp', 'bridge', 'track', 'rock', 'tree', 'bush', 'object', 'air']
 
 /** a tile counts as lying on a surface this close to it, mm */
 const LEVEL = 20
@@ -43,6 +44,8 @@ function kindOf(piece: PlacedTerrain | null): SurfaceKind {
     case 'post':
       // a bird may perch on a tree or a bush
       return piece.decor === 'rock' ? 'rock' : piece.decor === 'bush' ? 'bush' : 'tree'
+    case 'solid':
+      return 'object'
     default:
       return piece.kind
   }

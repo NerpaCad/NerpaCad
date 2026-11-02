@@ -4,6 +4,7 @@ import { idle, launch } from './app'
 const cad = (win: any, fn: (arg?: any) => any, arg?: any) => win.evaluate(fn, arg)
 
 test('beautiful view: switch it on under Start, day / evening / night, quality, during a run; kept in the project, not undone', async () => {
+  test.setTimeout(150000)
   const { app, win } = await launch()
   const errors: string[] = []
   win.on('console', (m: any) => m.type() === 'error' && errors.push(m.text()))

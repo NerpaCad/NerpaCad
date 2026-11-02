@@ -1,6 +1,6 @@
 {
   "name": "nerpacad",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "NerpaCad — простая 3D CAD-система и симулятор робототехники для детей",
   "main": "./out/main/index.js",
   "scripts": {
@@ -16,7 +16,14 @@
     "deps": "node scripts/check-deps.mjs"
   },
   "author": "Savelev Sviatoslav Sergeevitch",
-  "homepage": "https://example.org/nerpacad",
+  "homepage": "https://nerpacad.ru",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nerpacad/nerpacad.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nerpacad/nerpacad/issues"
+  },
   "license": "GPL-3.0-or-later",
   "devDependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",

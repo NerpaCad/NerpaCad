@@ -1,23 +1,21 @@
 /**
- * What the characters look like: the animated seal (glTF, clips Idle / Shuffle / Swim), the
- * cheetah Читик and the pigeon Геннадий. Each visual is a clone with its own skeleton, material
- * and animation mixer, with a speech bubble over it.
+ * What the characters look like: the seal, the cheetah Читик and the pigeon Геннадий. The models
+ * were made in Tripo (tripo3d.ai) and rigged and animated in Blender by the scripts in
+ * scripts/heroes/: each has its own clips for every motion (see CLIPS). Each visual is a clone with
+ * its own skeleton, materials and animation mixer, with a speech bubble over it.
  *
- * - The cheetah is a low-poly cat (one clip: run) made into a cheetah here: a coat drawn by a
- *   shader in the model's own coordinates (golden back, pale belly, spots, tear lines from the
- *   eyes, rings and a white tip on the tail), longer thinner legs and a smaller head by bone
- *   scales, a standing pose set by aiming the leg bones straight down. Walking is the run slowed
- *   down and pulled half way back to standing; a jump is a stretched frame of the run.
- * - The pigeon has clips for idle, flapping, gliding, takeoff and landing; walking is its idle
- *   with little hops.
- * - Changing from one motion to another blends over a quarter of a second (clips by the mixer's
- *   weights, the cheetah's procedural poses from a snapshot of the pose before).
+ * - The models keep their painted textures; a hero's colour tints them (its default colour leaves
+ *   them as they are).
+ * - The pigeon's wings for flying are feathers of their own, hidden (scaled to nothing) on the
+ *   ground; its clips open, beat and fold them. While they are out, the folded wings of its body
+ *   are pressed in (the shape key `WingsIn`) and painted over (pigeon-fly.jpg).
+ * - Changing from one motion to another blends over a quarter of a second.
  *
  * Model credits: models/*-LICENSE.txt next to the files (CC BY 4.0).
  */
 import {
   type AnimationAction,
-  BufferAttribute,
+  Color,
   LoopOnce,
   type AnimationClip,
   AnimationMixer,
@@ -27,11 +25,14 @@ import {
   Mesh,
   MeshStandardMaterial,
   type Object3D,
-  Quaternion,
+  type Material,
   SkinnedMesh,
+  SRGBColorSpace,
   SphereGeometry,
   Sprite,
   SpriteMaterial,
+  type Texture,
+  TextureLoader,
   Vector3
 } from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -39,24 +40,52 @@ import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js
 import type { Species } from '../core/doc/model'
 import { PROFILES } from '../core/robotics/creatures'
 import type { NerpaAnim } from '../core/robotics/nerpa'
-import { bubbleTexture, keepTree, noPick } from './roboVisuals'
+import { bubbleTexture, keepTree, loadPlaced, noPick } from './roboVisuals'
+import { HEROES, type HeroSpec, heroSpec } from '../core/robotics/mods'
 import sealUrl from '../assets/robots/seal.glb?url'
 import cheetahUrl from '../assets/robots/cheetah.glb?url'
 import pigeonUrl from '../assets/robots/pigeon.glb?url'
+import pigeonFlyUrl from '../assets/robots/pigeon-fly.jpg?url'
 
 const X = new Vector3(1, 0, 0)
 const Y = new Vector3(0, 1, 0)
 const Z = new Vector3(0, 0, 1)
-const NEG_Y = new Vector3(0, -1, 0)
 
 interface Template {
   scene: Object3D
   clips: AnimationClip[]
-  /** the cheetah's crouch: every bone's pose by name, and how much lower the body goes, mm */
-  crouch?: { pose: Map<string, { q: Quaternion; p: Vector3 }>; drop: number }
 }
 
 const templates: Partial<Record<Species, Template | null>> = {}
+/** the pigeon's body painted without its folded wings (shown while it flies) */
+let pigeonFly: Texture | null = null
+/** heroes of mods by id: their models once loaded (null: the files could not be loaded) */
+const heroTemplates = new Map<string, Template | null>()
+const heroLoading = new Map<string, Promise<void>>()
+
+/** Load a mod hero's model (once): fitted to the length of the hero it moves like, standing on z = 0. */
+function loadHero(h: HeroSpec): Promise<void> {
+  let p = heroLoading.get(h.id)
+  if (!p) {
+    p = (async () => {
+      try {
+        const placed = await loadPlaced(h.model)
+        const clips = (placed.userData.clips as AnimationClip[] | undefined) ?? []
+        const scene = frameModel(placed, new Matrix4(), PROFILES[h.like].length)
+        keepTree(scene)
+        heroTemplates.set(h.id, { scene, clips })
+      } catch (e) {
+        console.error(`mod ${h.mod}: hero ${h.id}`, e)
+        heroTemplates.set(h.id, null)
+      }
+    })()
+    heroLoading.set(h.id, p)
+  }
+  return p
+}
+
+/** the clips a mod hero's model plays when its mod.json does not say: by their usual names */
+const HERO_CLIPS: Partial<Record<NerpaAnim, RegExp>> = { idle: /idle|stand/i, walk: /walk/i, run: /run/i, swim: /swim/i, fly: /fly|flap/i, leap: /jump|leap/i }
 let loading: Promise<void> | null = null
 let loaded = false
 
@@ -79,9 +108,10 @@ function skinnedBox(root: Object3D): Box3 {
 
 /**
  * Put a model into a character's frame: mm, X forward, Z up, feet on the ground under its middle,
- * `length` long. `basis` turns the model's axes into ours.
+ * `length` long (and, given `height`, no taller than that: the hero's box). `basis` turns the
+ * model's axes into ours.
  */
-function frameModel(scene: Object3D, basis: Matrix4, length: number): Group {
+function frameModel(scene: Object3D, basis: Matrix4, length: number, height?: number): Group {
   const inner = new Group()
   inner.name = 'creature-pose'
   inner.add(scene)
@@ -89,118 +119,13 @@ function frameModel(scene: Object3D, basis: Matrix4, length: number): Group {
   const root = new Group()
   root.add(inner)
   let box = skinnedBox(root)
-  const k = length / Math.max(1e-6, box.max.x - box.min.x)
+  let k = length / Math.max(1e-6, box.max.x - box.min.x)
+  if (height) k = Math.min(k, height / Math.max(1e-6, box.max.z - box.min.z))
   inner.scale.multiplyScalar(k)
   box = skinnedBox(root)
   inner.position.set(inner.position.x - (box.min.x + box.max.x) / 2, inner.position.y - (box.min.y + box.max.y) / 2, inner.position.z - box.min.z)
   root.updateMatrixWorld(true)
   return root
-}
-
-const bone = (root: Object3D, prefix: string): Object3D | null => {
-  let found: Object3D | null = null
-  root.traverse((c) => {
-    if (!found && (c as { isBone?: boolean }).isBone && c.name.startsWith(prefix)) found = c
-  })
-  return found
-}
-
-/** Aim a chain of bones along world directions (the model's own axes: x forward, y up). */
-function aim(root: Object3D, chain: string[], dirs: [number, number, number][]): void {
-  for (let i = 0; i < chain.length - 1; i++) {
-    const b = bone(root, chain[i])
-    const c = bone(root, chain[i + 1])
-    if (!b || !c || !b.parent) continue
-    root.updateMatrixWorld(true)
-    const cur = c.getWorldPosition(new Vector3()).sub(b.getWorldPosition(new Vector3())).normalize()
-    const want = new Vector3(...dirs[i]).normalize()
-    const q = new Quaternion().setFromUnitVectors(cur, want)
-    const wq = b.getWorldQuaternion(new Quaternion())
-    const pq = b.parent.getWorldQuaternion(new Quaternion())
-    b.quaternion.copy(pq.invert().multiply(q).multiply(wq))
-  }
-}
-
-/** The cat stands: legs straight down, the tail hanging, the head up (its own pose is mid-run). */
-function catStand(root: Object3D): void {
-  for (const side of ['right', 'left']) {
-    const f = `leg_front_${side}_`
-    const b = `leg_back_${side}_`
-    aim(root, [f + '1', f + '2', f + '3', f + '4', f + '4_end'], [[0.05, -1, 0], [0, -1, 0], [0.02, -1, 0], [1, -0.25, 0]])
-    aim(root, [b + '1', b + '2', b + '3', b + '4', b + '4_end'], [[0.35, -1, 0], [-0.45, -1, 0], [0.08, -1, 0], [1, -0.25, 0]])
-  }
-  aim(root, ['neck', 'head'], [[1, 0.6, 0]])
-  aim(root, ['tail_1', 'tail_2', 'tail_3', 'tail_4', 'tail_4_end'], [[-1, -0.9, 0], [-0.6, -1, 0], [-0.4, -0.6, 0], [-0.3, 0.6, 0]])
-  root.updateMatrixWorld(true)
-}
-
-/** The cat crouches to crawl: knees bent, head low and forward, the tail straight back. */
-function catCrouch(root: Object3D): void {
-  for (const side of ['right', 'left']) {
-    const f = `leg_front_${side}_`
-    const b = `leg_back_${side}_`
-    aim(root, [f + '1', f + '2', f + '3', f + '4', f + '4_end'], [[-1, -0.6, 0], [1, -0.55, 0], [0.35, -1, 0], [1, -0.15, 0]])
-    aim(root, [b + '1', b + '2', b + '3', b + '4', b + '4_end'], [[1, -0.35, 0], [-1, -0.35, 0], [0.5, -1, 0], [1, -0.15, 0]])
-  }
-  aim(root, ['neck', 'head'], [[1, 0, 0]])
-  aim(root, ['tail_1', 'tail_2', 'tail_3', 'tail_4', 'tail_4_end'], [[-1, -0.1, 0], [-1, 0, 0], [-1, 0, 0], [-1, 0.1, 0]])
-  root.updateMatrixWorld(true)
-}
-
-/** The lowest foot of the cat (world z of its paw tips). */
-function lowestPaw(root: Object3D): number {
-  root.updateMatrixWorld(true)
-  let low = Infinity
-  root.traverse((o) => {
-    if ((o as { isBone?: boolean }).isBone && /^leg_.*_4_end/.test(o.name)) low = Math.min(low, o.getWorldPosition(new Vector3()).z)
-  })
-  return Number.isFinite(low) ? low : 0
-}
-
-/**
- * Cheetah proportions from the cat: long thin legs, a slim body, a small head, a long thin tail.
- * Stretching a bone unevenly would skew everything hanging from it once it turns, so each chain
- * is only scaled evenly at its first bone (thinner) and made longer by moving the bones below it
- * further out along it.
- */
-const CAT_BODY = 0.88
-const CAT_CHAINS: { bones: string[]; scale: number; length: number }[] = [
-  { bones: ['body_1', 'body_2', 'neck'], scale: CAT_BODY, length: 1.08 },
-  ...['right', 'left'].flatMap((side) => [
-    { bones: ['1', '2', '3', '4', '4_end'].map((k) => `leg_front_${side}_${k}`), scale: 0.82, length: 1.3 / CAT_BODY },
-    { bones: ['1', '2', '3', '4', '4_end'].map((k) => `leg_back_${side}_${k}`), scale: 0.82, length: 1.3 }
-  ]),
-  { bones: ['tail_1', 'tail_2', 'tail_3', 'tail_4', 'tail_4_end'], scale: 0.75, length: 1.35 },
-  // the head: smaller, whatever the body did to it
-  { bones: ['head'], scale: 0.8 / CAT_BODY, length: 1 }
-]
-
-/** how much further out each moved bone sits, by bone name prefix */
-const CAT_STRETCH = new Map(CAT_CHAINS.flatMap((c) => c.bones.slice(1).map((b) => [b, c.length / c.scale] as [string, number])))
-
-function catProportions(root: Object3D): void {
-  for (const c of CAT_CHAINS) {
-    bone(root, c.bones[0])?.scale.multiplyScalar(c.scale)
-    for (const name of c.bones.slice(1)) bone(root, name)?.position.multiplyScalar(c.length / c.scale)
-  }
-  root.updateMatrixWorld(true)
-}
-
-type BonePose = { p: Vector3; q: Quaternion; s: Vector3 }
-/** Every bone's local pose now. */
-function poseOf(root: Object3D): Map<Object3D, BonePose> {
-  const m = new Map<Object3D, BonePose>()
-  root.traverse((o) => {
-    if ((o as { isBone?: boolean }).isBone) m.set(o, { p: o.position.clone(), q: o.quaternion.clone(), s: o.scale.clone() })
-  })
-  return m
-}
-function setPose(pose: Map<Object3D, BonePose>): void {
-  for (const [b, v] of pose) {
-    b.position.copy(v.p)
-    b.quaternion.copy(v.q)
-    b.scale.copy(v.s)
-  }
 }
 
 async function load(url: string): Promise<Template | null> {
@@ -218,47 +143,29 @@ export function loadCreatures(): Promise<void> {
   if (!loading) {
     loading = (async () => {
       const [seal, cheetah, pigeon] = await Promise.all([load(sealUrl), load(cheetahUrl), load(pigeonUrl)])
-      // glTF from Sketchfab: Y up; the seal and the pigeon face +Z, the cat faces +X
-      if (seal) templates.seal = { scene: frameModel(seal.scene, new Matrix4().makeBasis(Y, Z, X), PROFILES.seal.length), clips: seal.clips }
-      if (cheetah) {
-        catProportions(cheetah.scene)
-        // the run clip keys some bone positions at the cat's lengths: stretched the same way
-        for (const [name, f] of CAT_STRETCH) {
-          const b = bone(cheetah.scene, name)
-          if (!b) continue
-          for (const clip of cheetah.clips)
-            for (const t of clip.tracks) if (t.name === `${b.name}.position`) for (let i = 0; i < t.values.length; i++) t.values[i] *= f
-        }
-        catStand(cheetah.scene)
-        coatPositions(cheetah.scene)
-        const stand = poseOf(cheetah.scene)
-        catCrouch(cheetah.scene)
-        const crouch = poseOf(cheetah.scene)
-        setPose(stand)
-        const framed = frameModel(cheetah.scene, new Matrix4().makeBasis(X, Z, NEG_Y), PROFILES.cheetah.length)
-        // how much lower its body goes crouched: its paws come up that much, so it is let down
-        setPose(crouch)
-        const up = lowestPaw(framed)
-        setPose(stand)
-        const drop = Math.max(0, up - lowestPaw(framed))
-        const byName = new Map([...crouch].map(([b, v]) => [b.name, { q: v.q, p: v.p }]))
-        templates.cheetah = { scene: framed, clips: cheetah.clips, crouch: { pose: byName, drop } }
+      try {
+        pigeonFly = await new TextureLoader().loadAsync(pigeonFlyUrl)
+        pigeonFly.flipY = false // as glTF's own textures
+        pigeonFly.colorSpace = SRGBColorSpace
+      } catch (e) {
+        console.error('pigeon texture', e)
       }
-      if (pigeon) {
-        // measured standing (its bind pose has the wings out), then back to the bind pose: the
-        // clips do not all move the same bones, and a bone one clip leaves alone must be at rest
-        const rest = poseOf(pigeon.scene)
-        const mixer = new AnimationMixer(pigeon.scene)
-        const idle = pigeon.clips.find((c) => /idle/i.test(c.name))
+      // glTF: Y up, the heroes face +Z; measured as they stand (the first frame of their idle:
+      // the pigeon's bind pose has its flying wings out)
+      for (const [species, t] of [['seal', seal], ['cheetah', cheetah], ['pigeon', pigeon]] as const) {
+        if (!t) continue
+        const mixer = new AnimationMixer(t.scene)
+        const idle = t.clips.find((c) => /^idle$/i.test(c.name))
         if (idle) {
           mixer.clipAction(idle).play()
           mixer.update(0)
         }
-        templates.pigeon = { scene: frameModel(pigeon.scene, new Matrix4().makeBasis(Y, Z, X), PROFILES.pigeon.length), clips: pigeon.clips }
+        const p = PROFILES[species]
+        templates[species] = { scene: frameModel(t.scene, new Matrix4().makeBasis(Y, Z, X), p.length, p.height), clips: t.clips }
         mixer.stopAllAction()
-        setPose(rest)
       }
       for (const t of Object.values(templates)) if (t) keepTree(t.scene)
+      await Promise.all(Object.values(HEROES).map((h) => loadHero(h)))
       loaded = true
     })()
     loading.catch((e) => console.error('character models', e))
@@ -267,91 +174,6 @@ export function loadCreatures(): Promise<void> {
 }
 
 export const creaturesReady = () => loaded
-
-// ---------------------------------------------------------------- the cheetah's coat
-
-/**
- * Where each vertex is on the finished cheetah (longer legs, standing): spots are drawn at these
- * points, so they stay round on the stretched legs and still stick to the skin as it moves.
- */
-function coatPositions(root: Object3D): void {
-  root.updateMatrixWorld(true)
-  const v = new Vector3()
-  root.traverse((o) => {
-    if (!(o instanceof SkinnedMesh)) return
-    const pos = o.geometry.getAttribute('position')
-    const out = new Float32Array(pos.count * 3)
-    o.skeleton.update()
-    for (let i = 0; i < pos.count; i++) {
-      v.fromBufferAttribute(pos, i)
-      o.applyBoneTransform(i, v)
-      v.toArray(out, i * 3)
-    }
-    o.geometry.setAttribute('coat', new BufferAttribute(out, 3))
-  })
-}
-
-/** The cheetah's coat: `color` is the golden back; spots, belly and face marks are drawn over it. */
-function coatMaterial(color: string): MeshStandardMaterial {
-  const m = new MeshStandardMaterial({ color, roughness: 0.8, metalness: 0, flatShading: true })
-  m.customProgramCacheKey = () => 'cheetah-coat'
-  m.onBeforeCompile = (sh) => {
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 coat;\nvarying vec3 vObj;\nvarying vec3 vObjN;\nvarying vec3 vCoat;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvObj = position;\nvObjN = normal;\nvCoat = coat;')
-    sh.fragmentShader = sh.fragmentShader
-      .replace(
-        '#include <common>',
-        `#include <common>
-varying vec3 vObj;
-varying vec3 vObjN;
-varying vec3 vCoat;
-vec3 coatHash(vec3 p) {
-  p = vec3(dot(p, vec3(127.1, 311.7, 74.7)), dot(p, vec3(269.5, 183.3, 246.1)), dot(p, vec3(113.5, 271.9, 124.6)));
-  return fract(sin(p) * 43758.5453);
-}
-float coatCells(vec3 p) {
-  vec3 i = floor(p);
-  vec3 f = fract(p);
-  float d = 9.0;
-  for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
-    vec3 g = vec3(float(x), float(y), float(z));
-    vec3 o = coatHash(i + g) * 0.7 + 0.15;
-    d = min(d, length(g + o - f));
-  }
-  return d;
-}
-float coatSeg(vec3 p, vec3 a, vec3 b) {
-  vec3 pa = p - a, ba = b - a;
-  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-  return length(pa - ba * h);
-}`
-      )
-      .replace(
-        '#include <color_fragment>',
-        `#include <color_fragment>
-{
-  vec3 gold = diffuseColor.rgb;
-  vec3 cream = mix(gold, vec3(0.98, 0.93, 0.82), 0.8);
-  float belly = smoothstep(-0.15, -0.6, vObjN.y);
-  vec3 col = mix(gold, cream, belly);
-  float head = smoothstep(0.17, 0.2, vObj.x);
-  float spot = (1.0 - smoothstep(0.22, 0.27, coatCells(vCoat * 48.0))) * (1.0 - belly);
-  spot *= mix(1.0, 0.5, head);
-  col = mix(col, vec3(0.12, 0.09, 0.07), spot);
-  float side = step(0.008, abs(vObj.z));
-  float tear = 1.0 - smoothstep(0.0028, 0.0045, coatSeg(vec3(vObj.xy, 0.0), vec3(0.251, 0.236, 0.0), vec3(0.271, 0.199, 0.0)));
-  col = mix(col, vec3(0.08, 0.06, 0.05), tear * side * step(0.235, vObj.x));
-  float tail = step(vObj.x, -0.32);
-  float ring = step(0.6, fract(vObj.x * 38.0));
-  col = mix(col, vec3(0.1, 0.08, 0.06), tail * ring);
-  col = mix(col, cream, step(vObj.x, -0.372));
-  diffuseColor.rgb = col;
-}`
-      )
-  }
-  return m
-}
 
 // ---------------------------------------------------------------- visuals
 
@@ -368,70 +190,100 @@ export interface SealLook {
 
 /** which clip plays for each animation state (missing: a procedural pose, see `animateCreature`) */
 const CLIPS: Record<Species, Partial<Record<NerpaAnim, RegExp>>> = {
-  seal: { idle: /^idle$/i, walk: /^shuffle$/i, run: /^shuffle$/i, leap: /^shuffle$/i, swim: /^swim$/i },
-  cheetah: { walk: /run/i, run: /run/i, leap: /run/i, fall: /run/i, crawl: /run/i },
-  pigeon: { idle: /idle/i, walk: /idle/i, fly: /flapping/i, takeoff: /takeoff/i, land: /gliding/i, touchdown: /landing/i, fall: /gliding/i }
+  seal: { idle: /^idle$/i, walk: /^walk$/i, run: /^walk$/i, leap: /^walk$/i, swim: /^swim$/i },
+  cheetah: { idle: /^idle$/i, walk: /^walk$/i, run: /^run$/i, leap: /^leap$/i, fall: /^fall$/i, crouch: /^crouch$/i, crawl: /^crawl$/i },
+  pigeon: { idle: /^idle$/i, walk: /^walk$/i, fly: /^flapping$/i, takeoff: /^takeoff$/i, land: /^gliding$/i, touchdown: /^landing$/i, fall: /^gliding$/i }
 }
 
 interface State {
   species: Species
+  /** a mod's hero: its clips only */
+  generic: boolean
   mixer: AnimationMixer | null
   actions: Partial<Record<NerpaAnim, AnimationAction>>
   anim: NerpaAnim
-  /** the cheetah's standing pose of every bone */
-  stand: Map<Object3D, { q: Quaternion; p: Vector3 }>
-  /** the model under the scale/lift group (for the pigeon's hops) */
-  pose: Object3D | null
-  hop: number
-  /** the cheetah's pose when its motion changed, blended away over BLEND seconds */
-  from: Map<Object3D, { q: Quaternion; p: Vector3 }> | null
-  blend: number
-  /** the cheetah crouched: every bone's pose, and how low the body goes (mm); `low` is how low it is now */
-  crouch: Map<Object3D, { q: Quaternion; p: Vector3 }>
-  drop: number
-  low: number
+  /** the pigeon: how far its folded wings are pressed in (0 on the ground, 1 flying) */
+  wingsIn: number
+  wingMeshes: { mesh: Mesh; index: number }[]
+  /** its painted materials with their ground map and the flying one */
+  maps: { mat: MeshStandardMaterial; ground: Texture | null; fly: Texture }[]
 }
+
+/** motions in which the pigeon's feather wings are out */
+const WINGS_OUT: ReadonlySet<NerpaAnim> = new Set(['fly', 'takeoff', 'land', 'touchdown', 'fall'])
 
 /** seconds over which one motion turns into the next */
 const BLEND = 0.25
-/**
- * Clips played once (and how): the takeoff faster to match the climb; the touchdown from its
- * braking part (the glide before it is the `land` clip) over the last TOUCHDOWN mm.
- */
+/** Clips played once (and how fast): the takeoff opens the wings into flight, the touchdown folds them. */
 const ONCE: Partial<Record<NerpaAnim, { from: number; speed: number }>> = {
-  takeoff: { from: 0, speed: 1.5 },
-  touchdown: { from: 0.45, speed: 1.8 }
+  takeoff: { from: 0, speed: 1 },
+  touchdown: { from: 0, speed: 1 }
 }
 
-/** A character's visual (null while the models load). */
-export function creatureModel(species: Species, color: string): Object3D | null {
+/**
+ * A character's visual (null while the models load). `hero`: a hero of a mod (it moves like
+ * `species`); while its mod is missing or its files are broken it looks like `species`.
+ */
+export function creatureModel(species: Species, color: string, hero?: string): Object3D | null {
   if (!loaded) return null
+  const h = heroSpec(hero)
+  if (h && !heroTemplates.has(h.id)) {
+    void loadHero(h)
+    return null
+  }
+  const own = h ? (heroTemplates.get(h.id) ?? null) : null
   // a model that failed to load: a plain egg instead
-  const tpl = templates[species] ?? null
+  const tpl = own ?? templates[species] ?? null
   const p = PROFILES[species]
   const g = new Group()
   g.name = 'seal-visual'
   const holder = new Group()
   g.add(holder)
-  let body: MeshStandardMaterial
-  const st: State = { species, mixer: null, actions: {}, anim: 'idle', stand: new Map(), pose: null, hop: 0, from: null, blend: 1, crouch: new Map(), drop: 0, low: 0 }
+  let body: MeshStandardMaterial | undefined
+  const st: State = { species, generic: !!own, mixer: null, actions: {}, anim: 'idle', wingsIn: 0, wingMeshes: [], maps: [] }
+  let paint: Paint | undefined
   if (tpl) {
     const m = cloneSkinned(tpl.scene)
-    body =
-      species === 'cheetah'
-        ? coatMaterial(color)
-        : species === 'pigeon'
-          ? pigeonMaterial(m, color)
-          : new MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05, flatShading: true })
-    m.traverse((o) => {
-      if (o instanceof Mesh) {
-        o.material = body
+    if (own) {
+      // the mod's own colours; the parts it names (`tint`) in the hero's colour
+      const tint = h!.tint ? new RegExp(h!.tint, 'i') : null
+      if (tint) body = new MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05 })
+      m.traverse((o) => {
+        if (!(o instanceof Mesh)) return
+        if (tint && body && tint.test(o.name)) o.material = body
         o.frustumCulled = false
         o.castShadow = true
+      })
+    } else {
+      // its own painted materials (copies: each hero is tinted on its own)
+      const mats = new Map<Material, MeshStandardMaterial>()
+      m.traverse((o) => {
+        if (!(o instanceof Mesh)) return
+        const src = o.material as MeshStandardMaterial
+        let own = mats.get(src)
+        if (!own) {
+          own = src.clone()
+          own.metalness = 0
+          mats.set(src, own)
+        }
+        o.material = own
+        o.frustumCulled = false
+        o.castShadow = true
+      })
+      paint = { mats: [...mats.values()].map((mat) => ({ mat, base: mat.color.clone() })), plain: new Color(PROFILES[species].color) }
+      if (species === 'pigeon') {
+        m.traverse((o) => {
+          const i = (o as Mesh).morphTargetDictionary?.WingsIn
+          if (o instanceof Mesh && i !== undefined) st.wingMeshes.push({ mesh: o, index: i })
+        })
+        if (pigeonFly) for (const mat of mats.values()) if (mat.map) st.maps.push({ mat, ground: mat.map, fly: pigeonFly })
       }
-    })
+    }
     st.mixer = new AnimationMixer(m)
-    for (const [anim, re] of Object.entries(CLIPS[species]) as [NerpaAnim, RegExp][]) {
+    const clipRules: Partial<Record<NerpaAnim, RegExp>> = own
+      ? { ...HERO_CLIPS, ...Object.fromEntries(Object.entries(h!.clips).map(([k, v]) => [k, new RegExp(v as string, 'i')])) }
+      : CLIPS[species]
+    for (const [anim, re] of Object.entries(clipRules) as [NerpaAnim, RegExp][]) {
       const clip = tpl.clips.find((c) => re.test(c.name.replace(/^.*\|/, '')))
       if (!clip) continue
       const a = st.mixer.clipAction(clip)
@@ -441,18 +293,8 @@ export function creatureModel(species: Species, color: string): Object3D | null 
       }
       st.actions[anim] = a
     }
-    if (species === 'cheetah') {
-      m.traverse((o) => {
-        if (!(o as { isBone?: boolean }).isBone) return
-        st.stand.set(o, { q: o.quaternion.clone(), p: o.position.clone() })
-        const c = tpl.crouch?.pose.get(o.name)
-        if (c) st.crouch.set(o, { q: c.q.clone(), p: c.p.clone() })
-      })
-      st.drop = tpl.crouch?.drop ?? 0
-    }
     st.actions.idle?.play()
     st.mixer.update(0)
-    st.pose = m
     holder.add(m)
   } else {
     // no model file: a simple rounded body
@@ -463,6 +305,7 @@ export function creatureModel(species: Species, color: string): Object3D | null 
     holder.add(e)
   }
   g.userData.body = body
+  g.userData.paint = paint
   g.userData.state = st
   const bubble = new Sprite(new SpriteMaterial({ transparent: true, depthTest: false, sizeAttenuation: false }))
   bubble.visible = false
@@ -476,17 +319,20 @@ export function creatureModel(species: Species, color: string): Object3D | null 
   return g
 }
 
-/** The pigeon keeps its feather texture, tinted by its colour. */
-function pigeonMaterial(m: Object3D, color: string): MeshStandardMaterial {
-  let src: MeshStandardMaterial | null = null
-  m.traverse((o) => {
-    if (!src && o instanceof Mesh) src = o.material as MeshStandardMaterial
-  })
-  const out = src ? (src as MeshStandardMaterial).clone() : new MeshStandardMaterial()
-  out.color.set(color)
-  out.roughness = 0.8
-  out.metalness = 0
-  return out
+/** A hero's painted materials and the colour that leaves them as painted. */
+interface Paint {
+  mats: { mat: MeshStandardMaterial; base: Color }[]
+  plain: Color
+}
+
+const tint = new Color()
+/** Tint the painted materials: the hero's colour over its default colour, channel by channel. */
+function setPaint(paint: Paint, color: string): void {
+  tint.set(color)
+  const r = Math.min(2, tint.r / Math.max(0.02, paint.plain.r))
+  const g = Math.min(2, tint.g / Math.max(0.02, paint.plain.g))
+  const b = Math.min(2, tint.b / Math.max(0.02, paint.plain.b))
+  for (const { mat, base } of paint.mats) mat.color.setRGB(base.r * r, base.g * g, base.b * b)
 }
 
 /** Put a character's look (colour, size, bubble, animation, hop) on its model. */
@@ -494,6 +340,7 @@ export function setCreatureLook(g: Object3D, look: SealLook): void {
   const st = g.userData.state as State
   const p = PROFILES[st.species]
   ;(g.userData.body as MeshStandardMaterial | undefined)?.color.set(look.color)
+  if (g.userData.paint) setPaint(g.userData.paint as Paint, look.color)
   g.visible = look.visible
   const k = Math.max(0.1, look.size / 100)
   const holder = g.children[0]
@@ -519,16 +366,9 @@ export function setCreatureLook(g: Object3D, look: SealLook): void {
   if (look.rest) {
     st.mixer.stopAllAction()
     st.actions.idle?.reset().play()
-    st.from = null
-    st.blend = 1
     st.anim = 'idle'
     animateCreature(g, 0)
   } else if (st.anim !== want) {
-    if (st.species === 'cheetah') {
-      // its poses are made here, not by the mixer: blend from the pose shown now
-      st.from = new Map([...st.stand.keys()].map((b) => [b, { q: b.quaternion.clone(), p: b.position.clone() }]))
-      st.blend = 0
-    }
     switchTo(st, want)
     st.anim = want
     animateCreature(g, 0)
@@ -537,8 +377,7 @@ export function setCreatureLook(g: Object3D, look: SealLook): void {
 
 /** Fade the clip of `want` in and every other playing clip out (the same clip just goes on). */
 function switchTo(st: State, want: NerpaAnim): void {
-  // the cheetah's own blend does it (the mixer fading would pass through its bind pose)
-  const fade = st.species === 'cheetah' ? 0 : BLEND
+  const fade = BLEND
   const to = st.actions[want] ?? st.actions.idle
   const once = ONCE[want]
   if (to && (once || !to.isRunning() || to.getEffectiveWeight() < 0.99)) {
@@ -556,86 +395,31 @@ function switchTo(st: State, want: NerpaAnim): void {
   }
 }
 
-/** Move a character's animation on by `dt` seconds (and its procedural poses). */
+/** Move a character's animation on by `dt` seconds. */
 export function animateCreature(g: Object3D, dt: number): void {
   const st = g.userData.state as State | undefined
   if (!st?.mixer) return
-  if (st.species === 'cheetah') return animateCheetah(st, dt)
   st.mixer.update(dt)
+  if (st.wingMeshes.length || st.maps.length) wingsIn(st, dt)
   // the takeoff clip is over but it still climbs: on into flapping
   const tk = st.actions.takeoff
   if (st.anim === 'takeoff' && tk && !tk.isRunning() && st.actions.fly && !st.actions.fly.isRunning()) {
     st.actions.fly.reset().play()
     st.actions.fly.crossFadeFrom(tk, BLEND, false)
   }
-  if (st.species === 'pigeon' && st.pose) {
-    // walking: little hops
-    st.hop = st.anim === 'walk' ? st.hop + dt * 14 : 0
-    st.pose.position.z = st.anim === 'walk' ? Math.abs(Math.sin(st.hop)) * 10 : 0
-  }
 }
 
-function animateCheetah(st: State, dt: number): void {
-  const mixer = st.mixer!
-  const run = st.actions.run
-  switch (st.anim) {
-    case 'run':
-      if (run) run.timeScale = 1.4
-      mixer.update(dt)
-      break
-    case 'walk':
-      // the run slowed down and half way back to standing
-      if (run) run.timeScale = 0.75
-      mixer.update(dt)
-      for (const [b, s] of st.stand) {
-        b.quaternion.copy(s.q.clone().slerp(b.quaternion, 0.45))
-        b.position.lerpVectors(s.p, b.position, 0.45)
-      }
-      break
-    case 'crawl':
-      // crouched, with a little of the run in the legs
-      if (run) run.timeScale = 0.55
-      mixer.update(dt)
-      for (const [b, c] of st.crouch) {
-        b.quaternion.copy(c.q.clone().slerp(b.quaternion, 0.3))
-        b.position.lerpVectors(c.p, b.position, 0.3)
-      }
-      break
-    case 'crouch':
-      mixer.stopAllAction()
-      for (const [b, c] of st.crouch) {
-        b.quaternion.copy(c.q)
-        b.position.copy(c.p)
-      }
-      break
-    case 'leap':
-    case 'fall':
-      // a stretched frame of the run
-      if (run) {
-        run.timeScale = 0
-        run.time = 0.62
-      }
-      mixer.update(0)
-      break
-    default:
-      mixer.stopAllAction()
-      for (const [b, s] of st.stand) {
-        b.quaternion.copy(s.q)
-        b.position.copy(s.p)
-      }
-  }
-  // crouched the body goes down as far as the bent legs let it
-  const low = st.anim === 'crouch' || st.anim === 'crawl' ? st.drop : 0
-  st.low += (low - st.low) * Math.min(1, dt / 0.12)
-  if (dt === 0 && st.blend >= 1) st.low = low
-  if (st.pose) st.pose.position.z = -st.low
-  if (st.from && st.blend < 1) {
-    st.blend = Math.min(1, st.blend + dt / BLEND)
-    const k = st.blend * st.blend * (3 - 2 * st.blend)
-    for (const [b, f] of st.from) {
-      b.quaternion.copy(f.q.clone().slerp(b.quaternion, k))
-      b.position.lerpVectors(f.p, b.position, k)
+/** The pigeon's folded wings go in as its feather wings come out (and back on landing). */
+function wingsIn(st: State, dt: number): void {
+  const want = WINGS_OUT.has(st.anim) ? 1 : 0
+  st.wingsIn = dt <= 0 ? want : st.wingsIn + Math.sign(want - st.wingsIn) * Math.min(Math.abs(want - st.wingsIn), dt / 0.3)
+  for (const { mesh, index } of st.wingMeshes) if (mesh.morphTargetInfluences) mesh.morphTargetInfluences[index] = st.wingsIn
+  const fly = st.wingsIn > 0.5
+  for (const m of st.maps) {
+    const map = fly ? m.fly : m.ground
+    if (m.mat.map !== map) {
+      m.mat.map = map
+      m.mat.needsUpdate = true
     }
-    if (st.blend >= 1) st.from = null
   }
 }

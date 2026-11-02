@@ -2,6 +2,7 @@
 import { memo } from 'preact/compat'
 import type { LedColor, Part } from '../core/circuit/model'
 import { BB_COLS, BB_RAILS, P, SPECS, railColumn, resistorBands } from '../core/circuit/parts'
+import { NewPartArt, type PartShow } from './circuitArt2'
 
 const LED_FILL: Record<LedColor, string> = { red: '#e0322b', yellow: '#f2d40b', green: '#2bc24a', blue: '#2f7dff', white: '#f2f4f7' }
 
@@ -235,7 +236,8 @@ export function PartArt({
   burnt,
   knob,
   angle,
-  alarm
+  alarm,
+  show
 }: {
   part: Part
   l13?: number
@@ -248,7 +250,11 @@ export function PartArt({
   angle?: number
   /** servo: asked to move but has no power */
   alarm?: boolean
+  /** the parts added in 0.3: what they show during a run */
+  show?: PartShow
 }) {
+  const fresh = NewPartArt({ part, show })
+  if (fresh) return fresh
   if (part.kind === 'arduino') return <ArduinoArt l13={l13} on={on} />
   if (part.kind === 'resistor') return <ResistorArt ohms={part.ohms} />
   if (part.kind === 'breadboard') return <BreadboardArt />

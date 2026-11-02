@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 /**
- * Start the app. Each start gets an autosave folder and an (empty) mods folder of its own (a
- * project autosaved by one test must not be offered to the next), unless `env` names them.
+ * Start the app. Each start gets an autosave folder, an (empty) mods folder and an empty list of
+ * recent projects of its own (a project autosaved by one test must not be offered to the next),
+ * unless `env` names them.
  */
 export async function launch(env: Record<string, string> = {}): Promise<{ app: ElectronApplication; win: Page }> {
   // Linux CI containers usually have no GPU: fall back to software WebGL there.
@@ -22,6 +23,8 @@ export async function launch(env: Record<string, string> = {}): Promise<{ app: E
       CAD_AUTOSAVE_DIR: mkdtempSync(join(tmpdir(), 'nerpa-autosave-')),
       // no mods unless a test brings its own (the developer's mods/ folder is not used)
       CAD_MODS_DIR: mkdtempSync(join(tmpdir(), 'nerpa-mods-')),
+      // no recent projects (no start screen) unless a test brings its own list
+      CAD_RECENT_FILE: join(mkdtempSync(join(tmpdir(), 'nerpa-recent-')), 'recent.json'),
       ...env
     } as Record<string, string>
   })

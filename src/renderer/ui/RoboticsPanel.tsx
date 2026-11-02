@@ -1,13 +1,16 @@
 /** Right panel of the Robotics tab: track tiles, the robot, sensors, run controls and readings. */
 import { useMemo } from 'preact/hooks'
 import { signal } from '@preact/signals'
-import { type DecorKind, type LightParams, type PrimType, SENSOR_TYPES, SPECIES, type Species, type SensorType, type TerrainKind, type TileKind } from '../core/doc/model'
+import { type DecorKind, type LightParams, SENSOR_TYPES, SPECIES, type Species, type SensorType, type TerrainKind, type TileKind } from '../core/doc/model'
 import { LAMP_HEIGHT, lampNode, nerpaNode, robotNode, terrainNode, tileNode } from '../core/robotics/demo'
 import { DEFAULT_TERRAIN, LAND_KINDS, type LandKind, RELIEF_KINDS, landParams, snapTerrain } from '../core/robotics/terrain'
 import { drawLand } from '../view/landVisuals'
 import { DECOR_KINDS } from '../core/robotics/decor'
 import { DEFAULT_ROBOT, SONAR_MAX_CM, localText, robotSpec } from '../core/robotics/robot'
-import { robotModels } from './mods'
+import { modHeroes, modProps, robotModels } from './mods'
+import type { HeroSpec, PropSpec } from '../core/robotics/mods'
+import { propSize } from '../view/modProps'
+import { createShape } from '../core/doc/shapes'
 import { followId, landBrush, prettyCap, programActor, programRobot, recording, sensorKind, sensorValues, simSpeed, simState, simTime, simVolume } from '../core/robotics/state'
 import { QUALITIES, TIMES, lowerQuality, normView } from '../core/robotics/look'
 import { MODULE_COLORS } from '../view/roboVisuals'
@@ -15,7 +18,7 @@ import { TILE_KINDS, drawTile } from '../core/robotics/tiles'
 import { doc } from '../core/doc/store'
 import { type Key, lang, t } from '../i18n'
 import * as A from './actions'
-import { Icon, ShapeIcon } from './icons'
+import { Icon } from './icons'
 import { pauseSim, startSim, stopSim } from './sim'
 
 const SPEEDS = [0.5, 1, 2, 4]
@@ -356,16 +359,6 @@ function dragRobot(e: PointerEvent, model = DEFAULT_ROBOT): void {
   )
 }
 
-function dragObstacle(type: PrimType, e: PointerEvent): void {
-  const vp = A.viewport()
-  if (e.button !== 0 || !vp || simState.peek() !== 'idle') return
-  e.preventDefault()
-  vp.beginShapeDrag(A.obstacleNode(type), e, (r) => {
-    if (r.kind === 'click') A.addObstacle(type)
-    else if (r.kind === 'drop') A.addObstacle(type, [r.pos.position[0], r.pos.position[1]])
-  })
-}
-
 function dragSensor(type: SensorType, e: PointerEvent): void {
   const vp = A.viewport()
   if (e.button !== 0 || !vp || simState.peek() !== 'idle') return
@@ -404,6 +397,72 @@ function dragLamp(kind: LightParams['kind'], e: PointerEvent): void {
       else if (r.kind === 'drop') A.addLight(kind, [r.pos.position[0], r.pos.position[1]])
     },
     (p) => ({ ...p, position: [p.position[0], p.position[1], LAMP_HEIGHT[kind]], rotation: [0, 0, 0] })
+  )
+}
+
+/** A hero of a mod: dragged like the hero it moves like. */
+function dragHero(h: HeroSpec, e: PointerEvent): void {
+  const vp = A.viewport()
+  if (e.button !== 0 || !vp || simState.peek() !== 'idle') return
+  e.preventDefault()
+  vp.beginShapeDrag(
+    nerpaNode(0, 0, 0, '', undefined, h.like),
+    e,
+    (r) => {
+      if (r.kind === 'click') A.addHero(h.id)
+      else if (r.kind === 'drop') A.addHero(h.id, [r.pos.position[0], r.pos.position[1]])
+    },
+    (p) => ({ ...p, position: [p.position[0], p.position[1], 0], rotation: [0, 0, 0] })
+  )
+}
+
+/** A piece of a mod: a box of its size shows where it goes (relief: on the middle of a tile). */
+function dragProp(q: PropSpec, e: PointerEvent): void {
+  const vp = A.viewport()
+  if (e.button !== 0 || !vp || simState.peek() !== 'idle') return
+  e.preventDefault()
+  const [sx, sy, sz] = propSize(q.id) ?? [100, 100, 100]
+  const ghost = createShape('box', '', [0, 0, 0])
+  ghost.transform = { ...ghost.transform, scale: [sx / 20, sy / 20, sz / 20] }
+  vp.beginShapeDrag(
+    ghost,
+    e,
+    (r) => {
+      if (r.kind === 'click') void A.addProp(q.id)
+      else if (r.kind === 'drop') void A.addProp(q.id, [r.pos.position[0], r.pos.position[1]])
+    },
+    (p) => {
+      const [x, y] = q.section === 'relief' ? snapTerrain(p.position[0], p.position[1], 0, 1) : [p.position[0], p.position[1]]
+      return { ...p, position: [x, y, A.surfaceAt(x, y)], rotation: [0, 0, 0] }
+    }
+  )
+}
+
+/** The tile of a mod's piece in the relief or scenery tab. */
+function PropTile({ q, idle }: { q: PropSpec; idle: boolean }) {
+  return (
+    <button
+      class="shape-tile small"
+      title={`${t('robo.modPieceHint')}${q.static ? ` ${t('robo.static')}.` : ''}`}
+      data-testid={`prop-${q.id}`}
+      disabled={!idle}
+      onPointerDown={(e) => dragProp(q, e as unknown as PointerEvent)}
+      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && void A.addProp(q.id)}
+    >
+      <ModGlyph />
+      <span>{localText(q.name, lang.value) || q.id}</span>
+    </button>
+  )
+}
+
+/** A thing from a mod: a little box with a plug. */
+function ModGlyph() {
+  return (
+    <svg viewBox="0 0 40 40" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
+      <path d="M8 14 20 8l12 6v13l-12 6-12-6z" />
+      <path d="M8 14l12 6 12-6M20 20v13" />
+      <path d="M27 4v5M31 4v5M25 9h8v3a4 4 0 0 1-8 0z" fill="currentColor" stroke="none" opacity="0.8" />
+    </svg>
   )
 }
 
@@ -498,6 +557,13 @@ export function RoboticsPanel() {
               </button>
             ))}
           </div>
+          {modProps.value.some((q) => q.section === 'relief') && (
+            <div class="shape-grid three">
+              {modProps.value.filter((q) => q.section === 'relief').map((q) => (
+                <PropTile q={q} idle={idle} />
+              ))}
+            </div>
+          )}
         </>
       )}
       {tab === 'decor' && (
@@ -514,6 +580,9 @@ export function RoboticsPanel() {
                 <DecorIcon kind={k} />
                 <span>{t(`robo.decor.${k}` as Key)}</span>
               </button>
+            ))}
+            {modProps.value.filter((q) => q.section === 'decor').map((q) => (
+              <PropTile q={q} idle={idle} />
             ))}
           </div>
         </>
@@ -533,6 +602,18 @@ export function RoboticsPanel() {
             <span>{localText(spec.name, lang.value) || spec.id}</span>
           </button>
         ))}
+        {/* one light: a lamp; the inspector makes it a spotlight */}
+        <button
+          class="shape-tile"
+          data-testid="add-light"
+          title={t('robo.lightHint')}
+          disabled={!idle}
+          onPointerDown={(e) => dragLamp('point', e as unknown as PointerEvent)}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && A.addLight('point')}
+        >
+          <LampGlyph kind="point" />
+          <span>{t('robo.lightSection')}</span>
+        </button>
       </div>
 
       <div class="panel-title">{t('robo.sensorsSection')}</div>
@@ -553,23 +634,6 @@ export function RoboticsPanel() {
       </div>
       {robot && robot.params.robot && <PadMap robotId={robot.id} />}
 
-      <div class="panel-title">{t('robo.lightSection')}</div>
-      <div class="shape-grid">
-        {(['spot', 'point'] as const).map((kind) => (
-          <button
-            class="shape-tile"
-            data-testid={`add-lamp-${kind}`}
-            title={t('robo.lampHint')}
-            disabled={!idle}
-            onPointerDown={(e) => dragLamp(kind, e as unknown as PointerEvent)}
-            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && A.addLight(kind)}
-          >
-            <LampGlyph kind={kind} />
-            <span>{t(kind === 'spot' ? 'robo.spotLamp' : 'robo.pointLamp')}</span>
-          </button>
-        ))}
-      </div>
-
       <div class="panel-title">{t('robo.heroesSection')}</div>
       <div class="shape-grid three">
         {SPECIES.map((sp) => (
@@ -585,21 +649,17 @@ export function RoboticsPanel() {
             <span>{t(sp === 'seal' ? 'shape.nerpa' : sp === 'cheetah' ? 'robo.cheetahName' : 'robo.pigeonName')}</span>
           </button>
         ))}
-      </div>
-
-      <div class="panel-title">{t('robo.obstacles')}</div>
-      <div class="shape-grid three">
-        {A.OBSTACLES.map((type) => (
+        {modHeroes.value.map((h) => (
           <button
             class="shape-tile small"
-            title={t('robo.obstaclesHint')}
-            data-testid={`obstacle-${type}`}
+            data-testid={`add-hero-${h.id}`}
+            title={t('robo.modHeroHint', { like: t(h.like === 'seal' ? 'shape.nerpa' : h.like === 'cheetah' ? 'robo.cheetahName' : 'robo.pigeonName') })}
             disabled={!idle}
-            onPointerDown={(e) => dragObstacle(type, e as unknown as PointerEvent)}
-            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && A.addObstacle(type)}
+            onPointerDown={(e) => dragHero(h, e as unknown as PointerEvent)}
+            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && A.addHero(h.id)}
           >
-            <ShapeIcon type={type} size={34} />
-            <span>{A.shapeName(type)}</span>
+            {h.like === 'seal' ? <NerpaGlyph /> : h.like === 'cheetah' ? <CheetahGlyph /> : <PigeonGlyph />}
+            <span>{localText(h.name, lang.value) || h.id}</span>
           </button>
         ))}
       </div>

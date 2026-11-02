@@ -5,13 +5,21 @@ import {
   circuit,
   circuitActive,
   circuitBurnt,
+  circuitJoy,
   circuitKnobs,
+  circuitLive,
+  circuitPressed,
   circuitResult,
+  circuitRoom,
   circuitSerial,
   circuitServos,
   circuitState,
+  circuitSwitches,
   circuitTime
 } from '../core/circuit/state'
+import type { Room } from '../core/circuit/model'
+import { roomOf } from '../core/circuit/room'
+import { buzz, silence } from './circuitSound'
 import { t } from '../i18n'
 import { notify } from './actions'
 
@@ -25,13 +33,17 @@ let serialSeen = -1
 export function startCircuit(): void {
   if (run) return
   const c = circuit.peek()
-  if (!c.parts.some((p) => p.kind === 'arduino')) {
+  if (!c.parts.some((p) => p.kind === 'arduino' || p.kind === 'battery')) {
     notify(t('ckt.needArduino'), 'error')
     return
   }
   run = new CircuitRun(structuredClone(c))
   circuitKnobs.value = Object.fromEntries(run.knobs)
-  if ([...run.programs.values()].every((p) => p.threadCount === 0)) notify(t('robo.noStartBlock'))
+  circuitPressed.value = new Set()
+  circuitSwitches.value = Object.fromEntries(run.switches)
+  circuitJoy.value = Object.fromEntries(run.joy)
+  if (run.programs.size && [...run.programs.values()].every((p) => p.threadCount === 0)) notify(t('robo.noStartBlock'))
+  circuitRoom.value = structuredClone(roomOf(c))
   warned = new Set()
   serialSeen = -1
   circuitSerial.value = []
@@ -62,7 +74,11 @@ function publish(): void {
   const active: Record<string, string[]> = {}
   for (const [id, p] of run.programs) active[id] = p.active()
   const servos = Object.fromEntries([...run.servos].map(([id, s]) => [id, { ...s }]))
+  const live = Object.fromEntries([...run.live].map(([id, l]) => [id, { ...l, ...(l.lines ? { lines: [...l.lines] } : {}) }]))
+  // buzzers: what they sound now
+  buzz(Object.fromEntries(Object.entries(live).filter(([, l]) => l.freq !== undefined).map(([id, l]) => [id, l.freq!])))
   batch(() => {
+    if (JSON.stringify(live) !== JSON.stringify(circuitLive.peek())) circuitLive.value = live
     if (circuitResult.peek() !== r) circuitResult.value = r
     if (circuitBurnt.peek().size !== run!.burnt.size) circuitBurnt.value = new Set(run!.burnt)
     circuitActive.value = active
@@ -86,6 +102,38 @@ function publish(): void {
   for (const k of run.timerClash) say(`timer:${k}`, t('ckt.servoTimer', { pin: k.split(':')[1].replace(/^D/, '') }))
 }
 
+/** Hold a button (or a joystick's stick) down during the run, or let it go. */
+export function pressPart(id: string, down: boolean): void {
+  if (!run) return
+  run.press(id, down)
+  circuitPressed.value = new Set(run.pressed)
+  publish()
+}
+
+/** Flip a slide switch during the run. */
+export function flipSwitch(id: string): void {
+  if (!run) return
+  run.flip(id)
+  circuitSwitches.value = Object.fromEntries(run.switches)
+  publish()
+}
+
+/** Move a joystick's stick during the run. */
+export function setRunJoy(id: string, x: number, y: number): void {
+  if (!run) return
+  run.setJoy(id, x, y)
+  circuitJoy.value = Object.fromEntries(run.joy)
+  publish()
+}
+
+/** Change the room during the run (things moved, a lamp switched, the sliders). */
+export function setRunRoom(room: Room): void {
+  if (!run) return
+  run.setRoom(room)
+  circuitRoom.value = room
+  publish()
+}
+
 /** Turn a potentiometer's knob during the run (0…1). */
 export function setRunKnob(id: string, v: number): void {
   if (!run) return
@@ -97,6 +145,7 @@ export function setRunKnob(id: string, v: number): void {
 export function stopCircuit(): void {
   cancelAnimationFrame(raf)
   run = null
+  silence()
   if (circuitState.peek() === 'idle') return
   batch(() => {
     circuitState.value = 'idle'
@@ -106,6 +155,11 @@ export function stopCircuit(): void {
     circuitTime.value = 0
     circuitServos.value = {}
     circuitKnobs.value = {}
+    circuitLive.value = {}
+    circuitPressed.value = new Set()
+    circuitSwitches.value = {}
+    circuitJoy.value = {}
+    circuitRoom.value = null
   })
 }
 

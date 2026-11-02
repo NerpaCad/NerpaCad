@@ -19,6 +19,7 @@ import { animateWater, landKey, landNeighbours, landVisual } from './landVisuals
 import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import type { Box, DecorKind, Doc, DocNode } from '../core/doc/model'
 import { decorVisual } from './decorVisuals'
+import { propVisual } from './modProps'
 import { type SealLook, animateCreature, creatureModel, setCreatureLook } from './creatureVisuals'
 import { speciesOf } from '../core/robotics/creatures'
 import { quatFromRotation } from '../core/doc/model'
@@ -141,6 +142,7 @@ export class SceneSync {
       this.syncRobo(obj, n)
       if (land && n.kind === 'prim' && n.prim === 'terrain') this.syncLand(obj, land.pieces.get(n.id), land.nb)
       if (n.kind === 'prim' && n.prim === 'decor') this.syncDecor(obj, n.params.decor?.kind ?? 'tree')
+      if (n.kind === 'prim' && n.prim === 'mesh' && n.params.prop) this.syncProp(obj, n.params.prop)
     })
     for (const [id, obj] of this.objects) {
       if (!seen.has(id)) {
@@ -290,6 +292,31 @@ export class SceneSync {
     if (look) this.applyLook(obj, look)
   }
 
+  /**
+   * A piece from a mod: the mod's own model over its mesh (which stays clickable). Without the
+   * mod (or with its files broken) the plain mesh shows in its colour.
+   */
+  private syncProp(obj: NodeObject, id: string): void {
+    const key = `prop:${id}`
+    if (obj.visualKey !== key) {
+      const v = propVisual(id, () => this.resync())
+      if (v === undefined) return
+      this.dropVisual(obj)
+      if (!v) {
+        obj.visualKey = key
+        return
+      }
+      v.traverse((o) => {
+        o.castShadow = true
+        o.receiveShadow = true
+      })
+      obj.visual = v
+      obj.visualKey = key
+      obj.add(v)
+    }
+    if (obj.visual && obj.mesh) obj.mesh.material = proxyMaterial
+  }
+
   /** Scenery: its little model over the clickable stand-in. */
   private syncDecor(obj: NodeObject, kind: DecorKind): void {
     if (obj.mesh) obj.mesh.material = proxyMaterial
@@ -331,9 +358,10 @@ export class SceneSync {
   private syncSeal(obj: NodeObject, n: DocNode & { kind: 'prim' }): void {
     if (obj.mesh) obj.mesh.material = proxyMaterial
     const species = speciesOf(n.params.nerpa?.species)
-    const key = `seal:${species}:${n.color}`
+    const hero = n.params.nerpa?.model
+    const key = `seal:${species}:${hero ?? ''}:${n.color}`
     if (obj.visualKey !== key) {
-      const model = creatureModel(species, n.color)
+      const model = creatureModel(species, n.color, hero)
       if (!model) {
         void loadRoboModels().then(() => this.resync())
         return

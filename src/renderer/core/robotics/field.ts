@@ -1,8 +1,8 @@
 /** Editing the robotics field over its terrain: things put down stand on the highest surface there. */
 import type { Doc, DocNode, PrimNode } from '../doc/model'
 import { updateNodes } from '../doc/ops'
-import { terrainOf } from './world'
-import { type PlacedTerrain, RELIEF_KINDS, footprintPoints, nearestSurface, placedTerrain, snapTerrain, topAt, topSurface, turnedCentre } from './terrain'
+import { isStaticShape, terrainOf } from './world'
+import { GROUND_HEIGHT, type PlacedTerrain, RELIEF_KINDS, footprintPoints, nearestSurface, placedTerrain, snapTerrain, topAt, topSurface, turnedCentre } from './terrain'
 import { TILE_SIZE } from './tiles'
 
 /** Things that stand on the ground (lamps hang in the air; terrain stands on the floor). */
@@ -18,14 +18,23 @@ const withZ = (n: DocNode, z: number): DocNode =>
 /** relief nodes from the bottom tier up */
 const byLevel = (a: DocNode, b: DocNode) => a.transform.position[2] - b.transform.position[2]
 
+/**
+ * The field as relief is built on it: every landscape tile — water too — is ground of the same
+ * height, so a ramp, platform or bridge stands as high on a pond as on the grass next to it.
+ */
+const asBuiltOn = (terrain: PlacedTerrain[]): PlacedTerrain[] =>
+  terrain.map((t) => (t.kind === 'water' ? { ...t, kind: 'ground', height: GROUND_HEIGHT } : t))
+
 /** The highest surface under any of a piece's cells: what a new piece is built on. */
 function highestUnder(terrain: PlacedTerrain[], t: PlacedTerrain): number {
-  return Math.max(0, ...footprintPoints(t).map(([x, y]) => topSurface(terrain, x, y)))
+  const on = asBuiltOn(terrain)
+  return Math.max(0, ...footprintPoints(t).map(([x, y]) => topSurface(on, x, y)))
 }
 
 /** The surface under a piece's cells nearest to height `z` (a moved piece keeps its tier). */
 function nearestUnder(terrain: PlacedTerrain[], t: PlacedTerrain, z: number): number {
-  return Math.max(0, ...footprintPoints(t).map(([x, y]) => nearestSurface(terrain, x, y, z).z))
+  const on = asBuiltOn(terrain)
+  return Math.max(0, ...footprintPoints(t).map(([x, y]) => nearestSurface(on, x, y, z).z))
 }
 
 /**
@@ -72,7 +81,8 @@ export function standOnTerrain(d: Doc, ids: string[], base?: Doc): Doc {
 /** The highest surface of the field at a floor point, mm. */
 export const surfaceOf = (d: Doc, x: number, y: number): number => topSurface(terrainOf(d), x, y)
 
-const terrainNodes = (d: Doc) => d.nodes.filter((n) => n.kind === 'prim' && n.prim === 'terrain')
+/** what the field's surfaces are made of: terrain pieces and static shapes */
+const terrainNodes = (d: Doc) => d.nodes.filter((n) => (n.kind === 'prim' && n.prim === 'terrain') || isStaticShape(d, n))
 
 /**
  * After terrain changed (a piece added, moved, turned, made taller, removed), whatever stood on
@@ -86,12 +96,16 @@ export function settleOnTerrain(prev: Doc, next: Doc): Doc {
   const b = terrainNodes(next)
   if (a.length === b.length && a.every((n, i) => n === b[i])) return next
   next = settleTiers(prev, next)
-  const before = terrainOf(prev)
-  const after = terrainOf(next)
+  const was0 = terrainOf(prev)
+  const now0 = terrainOf(next)
   const ids = next.nodes.filter((n) => standsOrShape(n)).map((n) => n.id)
   if (!ids.length) return next
   return updateNodes(next, ids, (n) => {
     const [x, y, z] = n.transform.position
+    // a static shape stands on the rest, not on itself
+    const own = (list: PlacedTerrain[]) => (n.fixed ? list.filter((t) => t.id !== n.id) : list)
+    const before = own(was0)
+    const after = own(now0)
     const stood = nearestSurface(before, x, y, z)
     // something resting on something else (a box on a box) is left where it is
     if (Math.abs(stood.z - z) > 1) return n
@@ -113,8 +127,8 @@ function settleTiers(prev: Doc, next: Doc): Doc {
   if (!relief.length) return next
   const reliefIds = new Set(relief.map((n) => n.id))
   // the landscape (the floor itself) does not move; the relief is laid on it tier by tier
-  const land = terrainOf({ ...next, nodes: next.nodes.filter((n) => !reliefIds.has(n.id)) })
-  const before = terrainOf(prev)
+  const land = asBuiltOn(terrainOf({ ...next, nodes: next.nodes.filter((n) => !reliefIds.has(n.id)) }))
+  const before = asBuiltOn(terrainOf(prev))
   const placed: PlacedTerrain[] = [...land]
   const out = new Map<string, number>()
   for (const n of relief) {
@@ -122,7 +136,9 @@ function settleTiers(prev: Doc, next: Doc): Doc {
     const t = pieceOf(n, 0)
     const others = before.filter((p) => p.id !== n.id)
     let nz = z
-    if (z > 1e-6) {
+    // on the floor or on the landscape (a piece built on a pond before it counted as ground stood
+    // a little lower): laid on the landscape again; higher up it follows what it stood on
+    if (z > GROUND_HEIGHT + 1) {
       // what it stood on before, cell by cell; where that piece is still there, on its new top
       const stood = footprintPoints(t).map(([x, y]) => ({ x, y, hit: nearestSurface(others, x, y, z) }))
       if (stood.some((s) => Math.abs(s.hit.z - z) <= 1)) {
@@ -135,8 +151,9 @@ function settleTiers(prev: Doc, next: Doc): Doc {
         )
       }
     } else {
-      // on the floor: a landscape tile laid under it later lifts it onto the tile
-      nz = Math.max(0, ...footprintPoints(t).map(([x, y]) => nearestSurface(placed, x, y, 0).z))
+      // on the floor: a landscape tile laid under it later lifts it onto the tile, one taken away
+      // lets it down
+      nz = Math.max(0, ...footprintPoints(t).map(([x, y]) => nearestSurface(placed, x, y, z).z))
     }
     if (Math.abs(nz - z) > 1e-6) out.set(n.id, nz)
     placed.push(pieceOf(n, nz))

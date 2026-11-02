@@ -9,7 +9,7 @@ import { type DocNode, isRoboNode, transformMatrix } from '../core/doc/model'
 import { doc, editLocked } from '../core/doc/store'
 import { circuitState } from '../core/circuit/state'
 import { geom } from '../core/geom/client'
-import { PHYS_DT, RoboWorld } from '../core/robotics/world'
+import { PHYS_DT, RoboWorld, isStaticShape } from '../core/robotics/world'
 import { type Quat, bodyQuat } from '../core/robotics/lean'
 import { EVENT_KEYS } from '../core/robotics/interpreter'
 import { ViewProbe } from '../view/idleProbe'
@@ -59,7 +59,7 @@ export async function startSim(): Promise<void> {
   const world = RoboWorld.fromDoc(d)
   world.sounds = soundPlayer
   if (world.seals.length) soundPlayer.preload()
-  if (world.programs().length === 0 && !d.nodes.some((n) => !isRoboNode(n) && !n.isHole)) {
+  if (world.programs().length === 0 && !d.nodes.some((n) => !isRoboNode(n) && !n.isHole && !isStaticShape(d, n))) {
     notify(t('robo.nothingToRun'), 'error')
     return
   }
@@ -69,7 +69,8 @@ export async function startSim(): Promise<void> {
   const base = new Map<string, Matrix4>()
   try {
     const shapes: ShapeBody[] = []
-    const nodes = d.nodes.filter((n) => !isRoboNode(n) && !n.isHole)
+    // static shapes are not bodies: they are part of the terrain (fixed colliders, see physics.ts)
+    const nodes = d.nodes.filter((n) => !isRoboNode(n) && !n.isHole && !isStaticShape(d, n))
     const [mod] = await Promise.all([import('../core/robotics/physics'), ...nodes.map((n) => geom.request(n))])
     for (const n of nodes) {
       const res = await geom.request(n)

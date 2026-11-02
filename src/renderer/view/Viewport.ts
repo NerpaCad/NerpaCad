@@ -45,9 +45,11 @@ import {
 } from '../core/doc/model'
 import { type Frame, GROUND, frameFromHit, frameMatrix } from '../core/doc/workplane'
 import { type Box2, type Guide, snapToGuides } from '../core/doc/snapping'
-import { type DimLabel, dims, sameDims } from './dims'
-import { type Axis, moveNodes, rotateNodes, setTransform, sizeToScale } from '../core/doc/ops'
+import { type DimLabel, dims, sameDims, separateDims } from './dims'
+import { type Axis, alignNodes, moveNodes, rotateNodes, setTransform, sizeToScale } from '../core/doc/ops'
+import { type AlignDot, AlignTool } from './AlignTool'
 import {
+  aligning,
   beginGesture,
   cancelGesture,
   commit,
@@ -163,6 +165,7 @@ export class Viewport {
   readonly controls: OrbitControls
   readonly sync: SceneSync
   readonly gizmo = new Gizmo()
+  readonly alignTool = new AlignTool()
   readonly workplane = new Workplane(200)
   /** the ZY and ZX planes through the origin (3D scene only) */
   readonly refPlanes = new RefPlanes(100, 150)
@@ -247,10 +250,11 @@ export class Viewport {
       this.sunStale = true
       this.invalidate()
     })
-    // lamps on the robotics field: the room gets dimmer so their light shows
-    this.sync.onLamps = (count) => this.setRoomLight(count > 0 ? 0.4 : 1)
+    // lamps on the robotics field do not dim the room: it stays as bright as without them
+    this.sync.onLamps = () => this.setRoomLight(1)
     this.scene.add(this.sync.root)
     this.scene.add(this.gizmo.root)
+    this.scene.add(this.alignTool.root)
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
     this.controls.mouseButtons = { LEFT: null, MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }
@@ -316,6 +320,15 @@ export class Viewport {
         void session.value
         void prettyCap.value
         untracked(() => this.applyPretty(true))
+      }),
+      effect(() => {
+        // the align tool switched on or off, or its reference shape changed
+        void aligning.value
+        untracked(() => {
+          this.cancelAlignPreview()
+          this.updateGizmo()
+          this.invalidate()
+        })
       }),
       effect(() => {
         this.workplane.setMinor(gridStep.value || 1)
@@ -470,6 +483,7 @@ export class Viewport {
     this.renderer.setClearColor(new Color(THEME.clear))
     this.workplane.applyTheme()
     this.gizmo.applyTheme()
+    this.alignTool.applyTheme()
     ;(this.guides.material as LineDashedMaterial).color.set(THEME.guide)
     this.shadowMat.color.set(THEME.shadow)
     this.shadowMat.opacity = THEME.shadowOpacity
@@ -639,6 +653,43 @@ export class Viewport {
     return p
   }
 
+  /**
+   * A small picture of the view for the list of recent projects (a JPEG data URL, `w`×`h`, the
+   * middle of the view), or null when the view cannot be drawn now.
+   */
+  thumbnail(w = 320, h = 200): string | null {
+    // the shapes only: no view cube, no handles
+    const was = this.bare
+    const handles = this.gizmo.root.visible
+    const dots = this.alignTool.root.visible
+    this.bare = true
+    this.gizmo.root.visible = false
+    this.alignTool.root.visible = false
+    this.needsRender = true
+    this.step()
+    this.bare = was
+    this.gizmo.root.visible = handles
+    this.alignTool.root.visible = dots
+    const src = this.renderer.domElement
+    if (!src.width || !src.height) return null
+    const c = document.createElement('canvas')
+    c.width = w
+    c.height = h
+    const g = c.getContext('2d')
+    if (!g) return null
+    // cover: the middle of the view, cut to the picture's shape
+    const k = Math.max(w / src.width, h / src.height)
+    const sw = w / k
+    const sh = h / k
+    g.drawImage(src, (src.width - sw) / 2, (src.height - sh) / 2, sw, sh, 0, 0, w, h)
+    this.invalidate()
+    try {
+      return c.toDataURL('image/jpeg', 0.78)
+    } catch {
+      return null
+    }
+  }
+
   private recorder: MediaRecorder | null = null
 
   /**
@@ -728,6 +779,7 @@ export class Viewport {
     if (h <= 0 || this.container.clientWidth <= 0) return
     this.needsRender = false
     this.gizmo.update(this.camera, h)
+    this.alignTool.update(this.camera, h)
     this.renderer.autoClear = true
     this.renderer.setViewport(0, 0, this.container.clientWidth, h)
     this.fitClipping()
@@ -1388,9 +1440,76 @@ export class Viewport {
 
   // ---------------------------------------------------------------- gizmo
 
+  /** the shapes' boxes when the align tool was laid out (the preview moves the shapes) */
+  private alignBoxes: Record<string, Box> = {}
+  /** a dot of the align tool is pointed at: the shapes are shown where they would go */
+  private alignBase: Doc | null = null
+
+  /** Lay the align tool's dots round the selection (or its reference shape). */
+  private updateAlign(): void {
+    const a = aligning.peek()
+    const ids = selection.peek()
+    if (a && (ids.length < 2 || session.peek() || simActive.peek() || this.sketchEd)) {
+      // nothing (or not enough) to align any more
+      queueMicrotask(() => (aligning.value = null))
+    }
+    if (!a || ids.length < 2) {
+      this.alignTool.setTarget(null, this.wp)
+      return
+    }
+    // while a preview is shown the dots stay where they were
+    if (this.alignBase) return
+    this.alignBoxes = this.wpBoxes(ids)
+    const key = a.key && ids.includes(a.key) && this.alignBoxes[a.key] ? a.key : null
+    const box = key ? this.alignBoxes[key] : unionBoxes(Object.values(this.alignBoxes))
+    this.alignTool.setTarget(box ?? null, this.wp, !!key, doc.peek().scene !== 'robo')
+  }
+
+  /** The document with the selection lined up at a dot (from the document before any preview). */
+  private aligned(spec: AlignDot, base: Doc): Doc {
+    const ids = selection.peek()
+    const key = aligning.peek()?.key ?? null
+    return alignNodes(base, ids, spec.axis, spec.mode, this.alignBoxes, this.wpAxes(), key && ids.includes(key) ? key : null)
+  }
+
+  /** Show the selection where the pointed-at dot would put it (null: back as it was). */
+  private previewAlign(spec: AlignDot | null): void {
+    if (!spec) return this.cancelAlignPreview()
+    this.alignBase ??= beginGesture()
+    previewGesture(this.aligned(spec, this.alignBase))
+  }
+
+  private cancelAlignPreview(): void {
+    if (!this.alignBase) return
+    this.alignBase = null
+    cancelGesture()
+  }
+
+  /** Line the selection up at a dot: one step of undo; the tool stays on for the next one. */
+  private applyAlign(spec: AlignDot): void {
+    if (this.alignBase) {
+      this.alignBase = null
+      endGesture()
+    } else commit(this.aligned(spec, doc.peek()))
+    this.updateAlign()
+    this.invalidate()
+  }
+
+  /** Where an align dot is on screen, in window coordinates (tests). */
+  alignDotScreen(axis: 0 | 1 | 2, mode: 'min' | 'center' | 'max'): { x: number; y: number } | null {
+    this.alignTool.update(this.camera, this.container.clientHeight)
+    const p = this.alignTool.dotLocal({ axis, mode })
+    const s = p ? this.toScreen(p.clone().applyMatrix4(this.wp)) : null
+    if (!s) return null
+    // in window coordinates, like mouse events
+    const r = this.renderer.domElement.getBoundingClientRect()
+    return { x: s.x + r.left, y: s.y + r.top }
+  }
+
   private updateGizmo(): void {
+    this.updateAlign()
     const ids = selection.value
-    if (ids.length === 0 || session.peek() || simActive.peek() || (this.drag.type === 'move' && inGesture())) {
+    if (ids.length === 0 || session.peek() || simActive.peek() || aligning.peek() || (this.drag.type === 'move' && inGesture())) {
       this.gizmo.setTarget(null, false)
       return
     }
@@ -1561,6 +1680,21 @@ export class Viewport {
 
     if (landBrush.peek() && doc.peek().scene === 'robo') return this.startBrush(e)
 
+    // the align tool: a dot lines the shapes up; a selected shape becomes (or stops being) the
+    // reference; anything else switches the tool off and is a normal click
+    if (this.alignTool.active) {
+      const dot = this.alignTool.pick(this.setRay(e.clientX, e.clientY))
+      if (dot) return this.applyAlign(dot)
+      const on = this.pickNode(e.clientX, e.clientY)
+      const a = aligning.peek()
+      if (a && on && selection.peek().includes(on.id)) {
+        aligning.value = { key: a.key === on.id ? null : on.id }
+        return
+      }
+      this.cancelAlignPreview()
+      aligning.value = null
+    }
+
     this.renderer.domElement.setPointerCapture(e.pointerId)
     const spec = this.gizmo.pick(this.setRay(e.clientX, e.clientY))
     if (spec) {
@@ -1727,6 +1861,16 @@ export class Viewport {
     if (this.viewCube.setHover(face >= 0 ? face : -1)) this.invalidate()
     if (face >= -1 || simActive.peek()) {
       this.renderer.domElement.style.cursor = face >= 0 ? 'pointer' : ''
+      return
+    }
+    if (this.alignTool.active) {
+      const dot = this.alignTool.pick(this.setRay(e.clientX, e.clientY))
+      if (this.alignTool.setHover(dot)) {
+        this.previewAlign(dot)
+        this.invalidate()
+      }
+      const on = dot ? null : this.pickNode(e.clientX, e.clientY)
+      this.renderer.domElement.style.cursor = dot || (on && selection.peek().includes(on.id)) ? 'pointer' : ''
       return
     }
     const spec = this.gizmo.pick(this.setRay(e.clientX, e.clientY))
@@ -2314,10 +2458,23 @@ export class Viewport {
   /** Size labels next to the selected shape's edges, and its height above the workplane. */
   private updateDims(): void {
     const next: DimLabel[] = []
+    // a pin over each static shape of the field (while editing): it does not move
+    const d0 = doc.peek()
+    if (d0.scene === 'robo' && !this.bare && !simActive.peek()) {
+      const fixed = d0.nodes.filter((n) => n.kind === 'prim' && n.prim === 'mesh' && n.fixed).map((n) => n.id)
+      const boxes = fixed.length ? this.sync.worldBoxes(fixed) : {}
+      for (const id of fixed) {
+        const b = boxes[id]
+        if (!b) continue
+        const s = this.toScreen(new Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, b.max[2]))
+        if (s) next.push({ id: `pin-${id}`, kind: 'pin', axis: 2, value: 0, x: s.x, y: s.y - 16 })
+      }
+    }
     const ids = selection.peek()
     const dt = this.drag.type
     const show =
       ids.length === 1 &&
+      !aligning.peek() &&
       !session.peek() &&
       !placingWorkplane.peek() &&
       (dt === 'none' || dt === 'scale' || dt === 'lift' || dt === 'pending')
@@ -2349,7 +2506,7 @@ export class Viewport {
           const len = Math.hypot(dx, dy) || 1
           dx /= len
           dy /= len
-          next.push({ id: `size${idx}`, kind: 'size', axis: idx, value, x: a.x + dx * 30, y: a.y + dy * 30 })
+          next.push({ id: `size${idx}`, kind: 'size', axis: idx, value, x: a.x + dx * 30, y: a.y + dy * 30, push: [dx, dy] })
         }
         const unit = Math.max(1, hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 0.1
         place(new Vector3(cx, ys, lo[2]), new Vector3(0, sy * unit, 0), 0, hi[0] - lo[0])
@@ -2359,13 +2516,13 @@ export class Viewport {
         const hMid = this.toScreen(new Vector3(cx, cy, (lo[2] + hi[2]) / 2).applyMatrix4(F))
         if (hEdge && hMid) {
           const side = hEdge.x >= hMid.x ? 1 : -1
-          next.push({ id: 'size2', kind: 'size', axis: 2, value: hi[2] - lo[2], x: hEdge.x + side * 36, y: hEdge.y - 10 })
+          next.push({ id: 'size2', kind: 'size', axis: 2, value: hi[2] - lo[2], x: hEdge.x + side * 36, y: hEdge.y - 10, push: [side, 0] })
         }
         const wb = this.sync.boxInFrame(id, this.wpInv)
         if (wb && Math.abs(wb.min[2]) > 0.05) {
           const mid = new Vector3((wb.min[0] + wb.max[0]) / 2, (wb.min[1] + wb.max[1]) / 2, wb.min[2] / 2)
           const s = this.toScreen(mid.applyMatrix4(this.wp))
-          if (s) next.push({ id: 'elev', kind: 'elev', axis: 2, value: cleanNum(wb.min[2], 3), x: s.x - 40, y: s.y })
+          if (s) next.push({ id: 'elev', kind: 'elev', axis: 2, value: cleanNum(wb.min[2], 3), x: s.x - 40, y: s.y, push: [-1, 0] })
         }
       }
     }
@@ -2383,7 +2540,9 @@ export class Viewport {
         if (ly && Math.abs(y) > 1e-6) next.push({ id: 'rulerY', kind: 'ruler', axis: 1, value: y, x: ly.x, y: ly.y })
       }
     }
-    if (!sameDims(dims.peek(), next)) dims.value = next
+    // labels never cover each other (on a small or far shape they would all meet) nor the handles
+    const placed = separateDims(next, 4, this.gizmo.screenPoints((p) => this.toScreen(p)))
+    if (!sameDims(dims.peek(), placed)) dims.value = placed
   }
 
   /** Apply a number typed into a dimension label. */

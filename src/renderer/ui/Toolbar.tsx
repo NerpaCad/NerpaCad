@@ -1,5 +1,5 @@
-import type { Axis, AlignMode } from '../core/doc/ops'
-import { canRedo, canUndo, placingRuler, placingWorkplane, selection, selectedNodes } from '../core/doc/store'
+import type { Axis } from '../core/doc/ops'
+import { aligning, canRedo, canUndo, placingRuler, placingWorkplane, selection, selectedNodes } from '../core/doc/store'
 import { inSketch, skCanRedo, skCanUndo, sketchPicking } from '../core/sketch/session'
 import { roboticsMode } from '../core/robotics/state'
 import { circuitsMode } from '../core/circuit/state'
@@ -266,9 +266,16 @@ function ShapeTools({ n, hasGroup, robo }: { n: number; hasGroup: boolean; robo:
           >
             <Icon.ungroup />
           </ToolButton>
-          <Dropdown title={t('tb.align')} icon={<Icon.align />} disabled={n < 2} testId="tb-align" cls="tb-sec">
-            {() => <AlignGrid />}
-          </Dropdown>
+          <ToolButton
+            title={`${t('tb.align')} (L): ${t('tb.alignTip')}`}
+            onClick={A.toggleAlign}
+            active={!!aligning.value}
+            disabled={n < 2}
+            testId="tb-align"
+            cls="tb-sec"
+          >
+            <Icon.align />
+          </ToolButton>
           <Dropdown title={t('tb.mirror')} icon={<Icon.mirror />} disabled={n === 0} testId="tb-mirror" cls="tb-sec">
             {(close) => (
               <>
@@ -314,33 +321,6 @@ function ShapeTools({ n, hasGroup, robo }: { n: number; hasGroup: boolean; robo:
   )
 }
 
-/** The align buttons: a 3 × 3 grid of axis × (min, centre, max). */
-function AlignGrid() {
-  return (
-              <div class="align-grid">
-                <span />
-                <span class="align-head">{t('align.min')}</span>
-                <span class="align-head">{t('align.center')}</span>
-                <span class="align-head">{t('align.max')}</span>
-                {AXES.map((ax) => (
-                  <>
-                    <span class="align-axis">{AXIS_NAME[ax]}</span>
-                    {(['min', 'center', 'max'] as AlignMode[]).map((m) => (
-                      <button
-                        class="align-btn"
-                        title={`${AXIS_NAME[ax]}: ${t(`align.${m}`)}`}
-                        data-testid={`align-${ax}-${m}`}
-                        onClick={() => A.align(ax, m)}
-                      >
-                        <AlignGlyph axis={ax} mode={m} />
-                      </button>
-                    ))}
-                  </>
-                ))}
-              </div>
-  )
-}
-
 /**
  * «More»: the tools that no longer fit in the toolbar (shown by the fit classes).
  * Rarer tools (m-sec) move first, then the next ones (m-ter).
@@ -350,6 +330,11 @@ function MoreMenu({ n, hasGroup, robo, shapes }: { n: number; hasGroup: boolean;
     <Dropdown title={t('tb.more')} icon={<Icon.more />} testId="tb-more" cls="tb-more" align="right">
       {(close) => (
         <div class="more-menu">
+          <div class="m-sec">
+            <button class="menu-item" onClick={() => (close(), void A.showStartScreen(true))} data-testid="menu-recent">
+              {t('start.menu')}
+            </button>
+          </div>
           {shapes && (
             <div class="m-sec">
               <button class="menu-item" disabled={n === 0} onClick={() => (close(), A.copy())}>
@@ -367,12 +352,9 @@ function MoreMenu({ n, hasGroup, robo, shapes }: { n: number; hasGroup: boolean;
                   {t('mirror.axis', { axis: AXIS_NAME[ax] })}
                 </button>
               ))}
-              {n >= 2 && (
-                <>
-                  <div class="menu-title">{t('tb.align')}</div>
-                  <AlignGrid />
-                </>
-              )}
+              <button class="menu-item" disabled={n < 2} onClick={() => (close(), A.toggleAlign())}>
+                {t('tb.align')} <kbd>L</kbd>
+              </button>
             </div>
           )}
           <div class="m-ter">
@@ -408,32 +390,3 @@ function MoreMenu({ n, hasGroup, robo, shapes }: { n: number; hasGroup: boolean;
   )
 }
 
-function AlignGlyph({ axis, mode }: { axis: Axis; mode: AlignMode }) {
-  // two bars of different length and the line they line up on
-  const vertical = axis !== 2
-  // along the aligned direction: 'lo' is left (X/Y) or bottom (Z)
-  const at = (len: number) => {
-    const lo = vertical ? 5 : 19 - len
-    if (mode === 'center') return 12 - len / 2
-    if (vertical) return mode === 'min' ? lo : 19 - len
-    return mode === 'min' ? lo : 5
-  }
-  const line = mode === 'center' ? 12 : vertical ? (mode === 'min' ? 5 : 19) : mode === 'min' ? 19 : 5
-  const bar = (len: number, cross: number) =>
-    vertical ? (
-      <rect x={at(len)} y={cross} width={len} height="5" rx="1" fill="currentColor" fill-opacity="0.25" />
-    ) : (
-      <rect x={cross} y={at(len)} width="5" height={len} rx="1" fill="currentColor" fill-opacity="0.25" />
-    )
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-      {vertical ? (
-        <line x1={line} y1="2" x2={line} y2="22" stroke-dasharray="2 2" />
-      ) : (
-        <line x1="2" y1={line} x2="22" y2={line} stroke-dasharray="2 2" />
-      )}
-      {bar(12, 5)}
-      {bar(7, 14)}
-    </svg>
-  )
-}

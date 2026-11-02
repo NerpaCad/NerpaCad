@@ -24,21 +24,24 @@ import {
   robotSpec,
   sensorPoint
 } from './robot'
-import { type PlacedTile, SURFACE_LIGHT, lineSensor } from './sensors'
+import { type PlacedTile, SURFACE_LIGHT, colorLight, lineSensor } from './sensors'
 import { type LightSource, type V3, lightReading } from './lighting'
 import { type Probe, occlusionFrom } from './probe'
 import { postsOf } from './decor'
+import { solidGridOf } from './solid'
 import { JUMP_HEIGHT, SimCreature, leapTop } from './nerpa'
 import { CEILING, CRUISE, GLIDE_DOWN, canFly, canLeap, canRun, canCrawl, canSwim, profileOf } from './creatures'
 import {
   CLIMB,
   GROUND_HEIGHT,
+  isLand,
   type PlacedTerrain,
   STEP,
   type Stance,
   nearestSurface,
   placedTerrain,
   stance,
+  supportAt,
   supportHit,
   surfacesAt,
   topAt,
@@ -125,12 +128,38 @@ export function floorPose(n: DocNode): { pose: Pose; z: number } {
   return { pose: { x: p[0], y: p[1], theta: Math.atan2(fwd.y, fwd.x) }, z: p[2] }
 }
 
-/** Platforms, ramps and bridges of the field. */
+/** Is this a static shape of the field (a model from the 3D tab marked «Static»)? */
+export const isStaticShape = (doc: Doc, n: DocNode): n is PrimNode => isPrim(n, 'mesh') && !!n.fixed && !!doc.meshes[n.params.meshId ?? '']
+
+/** A static shape as a piece of terrain: the columns of its grid. */
+export function solidPiece(doc: Doc, n: PrimNode): PlacedTerrain {
+  const grid = solidGridOf(n.params.meshId!, doc.meshes[n.params.meshId!], n.transform)
+  return {
+    id: n.id,
+    kind: 'solid',
+    grid,
+    x: grid.x0 + (grid.nx * grid.cell) / 2,
+    y: grid.y0 + (grid.ny * grid.cell) / 2,
+    angle: 0,
+    height: Math.max(0, grid.top - grid.bottom),
+    base: grid.bottom,
+    length: 1,
+    color: n.color
+  }
+}
+
+/** Platforms, ramps and bridges of the field, landscape tiles, and the static shapes. */
 export function terrainOf(doc: Doc): PlacedTerrain[] {
-  return doc.nodes.filter((n) => isPrim(n, 'terrain')).map((n) => {
-    const { pose } = floorPose(n)
-    return placedTerrain(n.id, (n as PrimNode).params.terrain, pose.x, pose.y, pose.theta, n.transform.position[2])
-  })
+  const out: PlacedTerrain[] = []
+  for (const n of doc.nodes) {
+    if (isPrim(n, 'terrain')) {
+      const { pose } = floorPose(n)
+      const t = placedTerrain(n.id, n.params.terrain, pose.x, pose.y, pose.theta, n.transform.position[2])
+      if (!isLand(t.kind)) t.color = n.color
+      out.push(t)
+    } else if (isStaticShape(doc, n)) out.push(solidPiece(doc, n))
+  }
+  return out
 }
 
 /**
@@ -343,12 +372,15 @@ export class RoboWorld {
     }
   }
 
-  /** How light the bare ground is here for a line sensor: grass, sand, stone, a road, water; white elsewhere. */
+  /**
+   * How light the bare ground is here for a line sensor: grass, sand, stone, a road, water; a
+   * platform, ramp, bridge or static shape as light as its colour; the white floor elsewhere.
+   */
   private groundLight(x: number, y: number, z: number): number {
     const s = nearestSurface(this.terrain, x, y, z)
     if (s.water) return SURFACE_LIGHT.water
     if (s.piece?.kind === 'ground') return SURFACE_LIGHT[s.piece.surface ?? 'grass']
-    return 1
+    return s.piece?.color ? colorLight(s.piece.color) : 1
   }
 
   private readSensor(r: SimRobot, pad: PadSpec, type: RobotSensor['type']): number {
@@ -579,11 +611,23 @@ export class RoboWorld {
     return surfaceAt(this.terrain, this.tiles, x, y, n.z)
   }
 
-  /** "ledge ahead?": something higher than a step right in front (a platform side, a ramp's side). */
+  /**
+   * "ledge ahead?": something higher than a step right in front (a platform side, a ramp's side).
+   * The way there is followed in short steps, so going up a ramp (or from a ramp onto the
+   * platform at its top) is no ledge: each little step is lower than a step.
+   */
   private ledgeAhead(n: SimCreature): boolean {
     const [x, y] = this.ahead(n)
     const pieces = this.terrain.filter((t) => t.kind !== 'post')
-    return wallAt(pieces, x, y, n.z, this.body(n).h)
+    const steps = Math.max(1, Math.ceil(Math.hypot(x - n.x, y - n.y) / LEDGE_PACE))
+    let z = n.z
+    for (let i = 1; i <= steps; i++) {
+      const q = i / steps
+      const s = supportAt(pieces, n.x + (x - n.x) * q, n.y + (y - n.y) * q, z)
+      if (s === null) return true
+      z = s
+    }
+    return false
   }
 
   /** "water ahead?": water right in front (for a flier: water anywhere below that point). */
@@ -662,8 +706,8 @@ export class RoboWorld {
       const h = topAt(t, c[0] + cs * fx - sn * fy, c[1] + sn * fx + cs * fy)
       if (h !== null && (top === null || h > top)) top = h
     }
-    // platforms and bridges have upright sides; only a ramp's slope can be higher ahead
-    const reach = t.kind === 'ramp' ? CLIMB * (Math.hypot(c[0] - r.pose.x, c[1] - r.pose.y) + hx) : 0
+    // platforms and bridges have upright sides; only a ramp's slope (or a static shape's) can be higher ahead
+    const reach = t.kind === 'ramp' || t.kind === 'solid' ? CLIMB * (Math.hypot(c[0] - r.pose.x, c[1] - r.pose.y) + hx) : 0
     return top !== null && top <= r.z + STEP + reach
   }
 
@@ -825,6 +869,9 @@ export class RoboWorld {
     for (const r of this.robots) this.read(r)
   }
 }
+
+/** "ledge ahead?" walks the way ahead in steps this long (mm): a climbable ramp rises less than a step over it */
+const LEDGE_PACE = 20
 
 /** a line sensor this high (mm) over the surface below it sees nothing (over a platform's edge) */
 export const LINE_DROP = 45

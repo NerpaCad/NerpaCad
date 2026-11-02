@@ -1,6 +1,6 @@
 appId: ru.nerpacad.app
 productName: NerpaCad
-copyright: © 2026 NerpaCad authors · GPL-3.0
+copyright: © 2026 Savelev Sviatoslav Sergeevitch · GPL-3.0
 directories:
   output: dist
   buildResources: build
@@ -40,8 +40,8 @@ linux:
   category: Education
   synopsis: Simple 3D CAD and robotics simulator for kids
   description: NerpaCad — простая 3D CAD-система, эскизы, симулятор робототехники и схемотехники для детей и школ.
-  maintainer: NerpaCad authors <nerpacad@localhost>
-  vendor: NerpaCad authors
+  maintainer: Savelev Sviatoslav Sergeevitch <nerpacad@localhost>
+  vendor: Savelev Sviatoslav Sergeevitch
   desktop:
     entry:
       Name: NerpaCad

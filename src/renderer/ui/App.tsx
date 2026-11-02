@@ -4,7 +4,7 @@ import { installedMods } from './mods'
 import { localText } from '../core/robotics/robot'
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { Vector3 } from 'three'
-import { doc, gridStep, placingRuler, placingWorkplane, refPlanes, ruler, selection, workplane } from '../core/doc/store'
+import { aligning, doc, gridStep, placingRuler, placingWorkplane, refPlanes, ruler, selection, workplane } from '../core/doc/store'
 import { geom } from '../core/geom/client'
 import { type Key, lang, t } from '../i18n'
 import { Viewport } from '../view/Viewport'
@@ -14,6 +14,7 @@ import { shortcutKey } from '../keys'
 import { fmtLen, GRID_STEPS, lenUnit } from '../units'
 import { Inspector } from './Inspector'
 import { DimensionLayer } from './DimensionLayer'
+import { StartScreen } from './StartScreen'
 import { ShapesPanel } from './ShapesPanel'
 import { Toolbar } from './Toolbar'
 import { SketchPanel } from './SketchPanel'
@@ -24,7 +25,8 @@ import { followId, landBrush, roboticsMode, simActive, simState } from '../core/
 import { RoboticsPanel } from './RoboticsPanel'
 import { BlocklyPanel } from './BlocklyPanel'
 import { pauseSim, simKey, startSim, stopSim } from './sim'
-import { circuit, circuitResult, circuitSelection, circuitState, circuitServos, circuitKnobs, circuitSerial, circuitsMode } from '../core/circuit/state'
+import { circuitLive, circuitRoom, circuit, circuitResult, circuitSelection, circuitState, circuitServos, circuitKnobs, circuitSerial, circuitsMode, circuit3d } from '../core/circuit/state'
+import { Circuit3D, circuitScene } from './Circuit3D'
 import { CircuitView, fitCircuit, wiring } from './CircuitView'
 import { CircuitsPanel } from './CircuitsPanel'
 import { arduinoProgram } from './arduinoProgram'
@@ -87,9 +89,15 @@ export function App() {
       circuitServos,
       circuitKnobs,
       circuitSerial,
+      circuitLive,
+      circuitRoom,
+      circuit3d,
+      circuitScene,
       circuitActions: C
     }
-    void A.loadStartupFile().then(() => startAutosave())
+    void A.loadStartupFile()
+      .then(() => startAutosave())
+      .then(() => A.showStartScreen())
     return () => {
       A.setViewport(null)
       v.dispose()
@@ -187,7 +195,7 @@ export function App() {
               </>
             )}
           </div>
-          {inSketch.value ? <SketchLayer /> : !robo && <DimensionLayer />}
+          {inSketch.value ? <SketchLayer /> : <DimensionLayer pinsOnly={robo} />}
           {!inSketch.value && <Inspector />}
           {!circ && <div class="grid-settings" onPointerDown={(e) => e.stopPropagation()}>
             <label>
@@ -227,7 +235,7 @@ export function App() {
           )}
           {glError && <div class="empty-hint error">{t('error.webgl')}</div>}
         </div>
-        {circ && <CircuitView />}
+        {circ && (circuit3d.value ? <Circuit3D /> : <CircuitView />)}
         {robo && <BlocklyPanel />}
         {circ && <BlocklyPanel source={arduinoProgram} />}
         </div>
@@ -236,6 +244,7 @@ export function App() {
       <Toasts />
       {help && <HelpDialog onClose={() => setHelp(false)} />}
       {recoverOffer.value && <RecoverDialog />}
+      {A.startScreen.value && !recoverOffer.value && <StartScreen />}
       {about && <AboutDialog onClose={() => setAbout(false)} />}
       {A.extrudeOpen.value && inSketch.value && <ExtrudeDialog />}
     </div>
@@ -294,7 +303,7 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
         </p>
         <p class="about-license">
           {t('about.license')} {t('about.noWarranty')}
-          <br />© 2026 NerpaCad authors
+          <br />© 2026 {__APP_AUTHOR__}
         </p>
         <p class="about-credits" data-testid="about-credits">
           {t('about.credits')}
@@ -334,7 +343,9 @@ function ModsList() {
               {m.mod?.version ? ` ${m.mod.version}` : ''}
               {m.mod?.author ? ` — ${m.mod.author}` : ''}
               {m.mod?.license ? ` (${m.mod.license})` : ''}
-              {m.mod && <span>. {t('mods.robots', { names: m.mod.robots.map((r) => localText(r.name, L) || r.id).join(', ') })}</span>}
+              {m.mod && m.mod.robots.length > 0 && <span>. {t('mods.robots', { names: m.mod.robots.map((r) => localText(r.name, L) || r.id).join(', ') })}</span>}
+              {m.mod && m.mod.heroes.length > 0 && <span>. {t('mods.heroes', { names: m.mod.heroes.map((r) => localText(r.name, L) || r.id).join(', ') })}</span>}
+              {m.mod && m.mod.props.length > 0 && <span>. {t('mods.props', { names: m.mod.props.map((r) => localText(r.name, L) || r.id).join(', ') })}</span>}
               {m.errors.length > 0 && <div class="mod-err">{t(m.mod ? 'mods.notes' : 'mods.broken', { errors: m.errors.join('; ') })}</div>}
             </li>
           ))}
@@ -488,12 +499,19 @@ function inBlockly(el: HTMLElement | null): boolean {
 
 function handleKey(e: KeyboardEvent, vp: Viewport | null, toggleHelp: () => void): void {
   const el = e.target as HTMLElement
-  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return
+  // a tick box is like a button (Ctrl+Z after ticking one takes the tick back); other fields keep their keys
+  const tick = el?.tagName === 'INPUT' && ['checkbox', 'radio'].includes((el as HTMLInputElement).type)
+  if (el && !tick && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return
   // a focused button takes Space and Enter itself (a panel tile adds its thing, not also a run)
-  if (el?.tagName === 'BUTTON' && (e.key === ' ' || e.key === 'Enter')) return
+  if ((el?.tagName === 'BUTTON' || tick) && (e.key === ' ' || e.key === 'Enter')) return
   if (inBlockly(el) || inBlockly(document.activeElement as HTMLElement | null)) return
   // "Restore the project?" waits for an answer: nothing else happens meanwhile
   if (recoverOffer.peek()) return
+  // the start screen: Esc closes it, nothing else happens meanwhile
+  if (A.startScreen.peek()) {
+    if (e.key === 'Escape') A.startScreen.value = false
+    return
+  }
   const ctrl = e.ctrlKey || e.metaKey
   const k = shortcutKey(e)
   const step = gridStep.value || 1
@@ -545,6 +563,7 @@ function handleKey(e: KeyboardEvent, vp: Viewport | null, toggleHelp: () => void
     if (!ctrl && (k === 'w' || k === 'h' || k === 's')) return
   }
   if (e.key === 'Escape') {
+    if (aligning.value) return run(A.exitAlign)
     if (sketchPicking.value) return run(() => (sketchPicking.value = false))
     if (placingWorkplane.value) return run(() => (placingWorkplane.value = false))
     if (placingRuler.value) return run(() => (placingRuler.value = false))
@@ -578,6 +597,7 @@ function handleKey(e: KeyboardEvent, vp: Viewport | null, toggleHelp: () => void
   if (k === 'd') return run(A.dropSelected)
   if (k === 'w') return run(A.toggleWorkplanePicking)
   if (k === 'r') return run(A.toggleRulerPlacing)
+  if (k === 'l') return run(A.toggleAlign)
   if (k === 'f') return run(() => vp?.fitView())
   if (e.key === 'F1' || e.key === '?') return run(toggleHelp)
   if (e.key === 'F12') return run(() => window.api.toggleDevTools())

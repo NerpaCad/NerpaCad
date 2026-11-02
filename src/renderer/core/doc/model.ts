@@ -113,6 +113,8 @@ export interface NerpaParams {
   program?: unknown
   /** missing: the seal (files from before the other characters) */
   species?: Species
+  /** a hero from a mod (it moves like `species`); kept even when that mod is not installed */
+  model?: string
 }
 
 export interface RobotParams {
@@ -157,6 +159,8 @@ export interface PrimParams {
   decor?: DecorParams
   /** 'mesh' prims sent from the 3D scene to the robotics field: which 3D shapes they were made of */
   source?: string
+  /** 'mesh' prims that are a piece from a mod: its id (shown with the mod's model while it is installed) */
+  prop?: string
 }
 
 export type SketchOp = 'extrude' | 'revolve'
@@ -179,6 +183,8 @@ interface BaseNode {
   noMirror?: true
   /** weight in grams for the physics in robotics mode (default: from the volume, as PLA) */
   mass?: number
+  /** robotics: a static shape — it does not move, robots and heroes go over it like over terrain */
+  fixed?: true
 }
 
 export interface PrimNode extends BaseNode {
